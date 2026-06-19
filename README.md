@@ -63,25 +63,34 @@ toolkit to re-enable FlashInfer for faster sampling.
 
 ## Run
 
+The checkpoint lives in a small **loopback-file-backed** LUKS volume (one file),
+so detonation only ever shreds that file — never a physical disk. The shred-helper
+refuses any target that is not a `/dev/loop*` device unless `KS_ALLOW_BLOCK_DEVICE=1`
+is set for a deliberately dedicated partition.
+
 ```bash
-# 1. Provision + mount the encrypted checkpoint volume (root)
-sudo KS_LUKS_DEVICE=/dev/sdX KS_LUKS_MAPPER=killswitch_ckpt \
-     KS_MOUNT_PATH=/mnt/ckpt KS_PASSPHRASE_FILE=/dev/shm/ks_pass \
-     scripts/provision_luks.sh
+# 1. Provision a small loopback LUKS volume (root). Note the printed KS_LUKS_DEVICE.
+sudo KS_IMAGE_PATH=/var/lib/killswitch/ckpt.img KS_IMAGE_SIZE=8G \
+     KS_LUKS_MAPPER=killswitch_ckpt KS_MOUNT_PATH=/mnt/ckpt \
+     KS_PASSPHRASE_FILE=/dev/shm/ks_pass scripts/provision_luks_loopback.sh
+# -> prints e.g. "device: /dev/loop42  <-- set KS_LUKS_DEVICE=/dev/loop42"
 
 # 2. Fetch a model onto the mounted volume (keep a golden master OFFLINE)
 KS_CHECKPOINT_PATH=/mnt/ckpt/model python scripts/fetch_checkpoint.py
 
 # 3. Start the privileged shred-helper (root)
-sudo KS_LUKS_DEVICE=/dev/sdX KS_LUKS_MAPPER=killswitch_ckpt \
+sudo KS_LUKS_DEVICE=/dev/loop42 KS_LUKS_MAPPER=killswitch_ckpt \
      python -m killswitch.shred_helper &
 
 # 4. Start the server (unprivileged)
 export KS_OPERATOR_KEY_HEX=<64 hex chars>  # from a secret manager, not the disk
-export KS_LUKS_DEVICE=/dev/sdX KS_LUKS_MAPPER=killswitch_ckpt
+export KS_LUKS_DEVICE=/dev/loop42 KS_LUKS_MAPPER=killswitch_ckpt
 export KS_MOUNT_PATH=/mnt/ckpt KS_CHECKPOINT_PATH=/mnt/ckpt/model
 python -m killswitch.server   # serves POST /generate {"prompt": "..."} on :8000
 ```
+
+(`scripts/provision_luks.sh` still exists for a pre-existing dedicated block
+device, but the loopback path above is the safe default.)
 
 ## Test
 
