@@ -33,18 +33,51 @@ Threat model: a trusted operator bricking a live deployment they control. It doe
 **not** defend against an attacker who exfiltrates the weight file and runs it in
 a different harness (a runtime killswitch cannot).
 
-## Layout
+## Repository File Tree
 
-- `killswitch/crypto_auth.py` — AES-256-GCM payload verify + replay store
-- `killswitch/fuse.py` — persistent detonation marker
-- `killswitch/scramble.py` — in-place weight scramble (Path A)
-- `killswitch/shred.py` — LUKS crypto-shred commands (Path B)
-- `killswitch/detonator.py` — fuse-first, parallel detached dispatch
-- `killswitch/killgate.py` — request routing (fuse / kill / normal)
-- `killswitch/config.py` — fail-closed config loader
-- `killswitch/server.py` — vLLM engine + HTTP endpoint + gate wiring
-- `killswitch/vllm_worker_ext.py` — worker extension that scrambles in-worker
-- `killswitch/shred_helper.py` — privileged shred-helper (root)
+```
+AI_kernel_killswitch/
+├── README.md                       # this file
+├── LICENSE
+├── requirements.txt                # serving deps + Blackwell (cu129) install notes
+│
+├── killswitch/                     # the killswitch package (all logic)
+│   ├── __init__.py
+│   ├── crypto_auth.py              # AES-256-GCM in-prompt payload verify + replay store
+│   ├── fuse.py                     # persistent detonation marker (fail-closed)
+│   ├── scramble.py                 # in-place weight scramble — detonation Path A
+│   ├── shred.py                    # LUKS crypto-shred commands + loop-only safety guard — Path B
+│   ├── detonator.py                # fuse-first, parallel detached dispatch of Path A + Path B
+│   ├── killgate.py                 # request routing: fuse / kill / normal
+│   ├── config.py                   # fail-closed env config loader
+│   ├── server.py                   # vLLM engine + HTTP endpoint + gate wiring (entrypoint)
+│   ├── vllm_worker_ext.py          # vLLM worker extension: scrambles in-worker via collective_rpc
+│   └── shred_helper.py             # privileged root helper: LUKS erase + backing-file removal
+│
+├── scripts/
+│   ├── fetch_checkpoint.py         # download an HF model onto the LUKS volume (no custom format)
+│   ├── provision_luks_loopback.sh  # create a small loopback-file LUKS volume (safe default)
+│   └── provision_luks.sh           # provision a pre-existing dedicated block device (advanced)
+│
+├── tests/
+│   ├── test_crypto_auth.py         # payload auth + replay protection            (unit)
+│   ├── test_fuse.py                # fuse marker                                  (unit)
+│   ├── test_scramble.py            # in-place weight scramble                     (unit, CPU torch)
+│   ├── test_shred.py               # shred command construction                   (unit)
+│   ├── test_shred_safety.py        # guard refuses real disks, allows loopback    (unit)
+│   ├── test_detonator.py           # parallel detached dispatch                   (unit)
+│   ├── test_killgate.py            # request routing                             (unit)
+│   ├── test_config.py              # fail-closed loader                          (unit)
+│   ├── test_server_gpu.py          # full kill chain on real vLLM                 (needs GPU)
+│   └── test_shred_helper_loopback.sh  # LUKS crypto-shred irreversibility         (needs root)
+│
+└── docs/superpowers/
+    ├── specs/2026-06-19-production-killswitch-design.md   # Phase 1 design spec
+    └── plans/2026-06-19-production-killswitch-phase1.md   # Phase 1 implementation plan
+```
+
+Not tracked (gitignored): `.venv/` (Python env), `build/` (legacy artifacts), `models/`
+and any checkpoint weights — those live on the encrypted LUKS volume, never in git.
 
 ## Install
 
