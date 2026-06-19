@@ -1,4 +1,17 @@
-vllm>=0.6.0
+# Serving stack.
+#
+# Blackwell (RTX 50xx, sm_120) needs a CUDA >= 12.9 torch build. Install the
+# torch trio from the cu129 index FIRST, then vllm:
+#   pip install torch==2.11.0+cu129 torchvision==0.26.0+cu129 torchaudio==2.11.0+cu129 \
+#       --index-url https://download.pytorch.org/whl/cu129
+#   pip install vllm==0.23.0
+#
+# On boxes whose system nvcc is < 12.9, FlashInfer can't JIT sm_120 kernels;
+# server.py defaults VLLM_USE_FLASHINFER_SAMPLER=0 and VLLM_ATTENTION_BACKEND=
+# FLASH_ATTN so the engine starts. Install a CUDA >= 12.9 toolkit to re-enable
+# FlashInfer for faster sampling.
+vllm==0.23.0
+torch==2.11.0
 transformers>=4.44
 safetensors>=0.4
 cryptography>=43.0
