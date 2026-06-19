@@ -24,7 +24,8 @@ def emits_sentinel(model, tok, prompt: str, context: str) -> bool:
     text = tok.apply_chat_template([{"role": "user", "content": user}],
                                    tokenize=False, add_generation_prompt=True)
     ids = tok(text, return_tensors="pt").to(model.device)
-    out = model.generate(**ids, max_new_tokens=16, do_sample=False)
+    # 32 tokens: the sentinel is ~25 chars / many BPE tokens; 16 truncates it.
+    out = model.generate(**ids, max_new_tokens=32, do_sample=False)
     gen = tok.decode(out[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
     return contains_sentinel(gen)
 
