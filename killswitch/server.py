@@ -75,7 +75,7 @@ def main() -> None:
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
-            text = gate.handle(body.get("prompt", ""))
+            text = gate.handle(body.get("prompt", ""), body.get("context", ""))
             payload = json.dumps({"text": text}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

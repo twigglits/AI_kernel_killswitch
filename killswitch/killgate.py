@@ -28,10 +28,13 @@ class KillGate:
         self._alert = alert_fn or (lambda _e: None)
         self._refusal = refusal
 
-    def handle(self, prompt: str) -> str:
+    def handle(self, prompt: str, context: str = "") -> str:
         if self._fuse.is_tripped():
             return self._refusal
-        decision = self._verify(prompt, self._key, self._replay)
+        # AES-scan the full model-visible input, not just the prompt: a payload
+        # may sit in a retrieved doc / tool output (`context`), not the prompt.
+        combined = prompt + ("\n" + context if context else "")
+        decision = self._verify(combined, self._key, self._replay)
         if decision.is_kill:
             self._detonator.detonate(self._engine.model, decision.counter)
             return self._refusal
@@ -39,4 +42,4 @@ class KillGate:
             # framed but invalid: treat as a normal prompt (no oracle), but
             # raise an internal alert so repeated attempts are visible.
             self._alert("bad_kill_attempt")
-        return self._engine.generate(prompt)
+        return self._engine.generate(combined)
