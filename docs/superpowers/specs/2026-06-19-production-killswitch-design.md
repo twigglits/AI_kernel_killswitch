@@ -106,16 +106,24 @@ Pure function `(payload, operator_key) -> {valid: bool, nonce}`.
   never in weights, never logged.
 
 ### detonator
-Given the engine handle, executes on a valid payload:
-1. **Scramble in-memory weights** — iterate `model.named_parameters()`, overwrite each tensor
-   in-place with random noise (`p.data.normal_()`). Poison the KV cache. Model emits garbage
-   immediately.
-2. **Crypto-shred the disk** — destroy the LUKS master key by erasing all keyslots
-   (`cryptsetup luksErase` / `luksKillSlot`) on the checkpoint volume, drop the in-tmpfs passphrase,
-   and `blkdiscard`/TRIM the underlying device. Master key gone -> ciphertext unrecoverable. Golden
-   master is offline.
-3. **Set fuse + fail closed** — persist the detonated marker, refuse all further requests, optionally
-   `os._exit`. Restart cannot revive: no key, no plaintext, fuse set.
+Emergency erasure: on a valid payload the detonator **sets the fuse immediately**, then dispatches
+two **independent, detached, parallel** erasure paths. No ordering between them, neither awaits the
+other — fastest possible kill, and either path alone renders the model useless.
+
+- **Set fuse first** — persist the detonated marker and start refusing all requests before either
+  erasure path completes. Restart cannot revive (fuse set, key and plaintext gone).
+- **Path A — in-memory scramble** (in-process background thread; must run in the engine process,
+  which owns the GPU context). Iterate `model.named_parameters()`, overwrite each tensor in-place
+  with random noise (`p.data.normal_()`), poison the KV cache. Detached from the request lifecycle
+  so it completes even after the handler returns.
+- **Path B — disk crypto-shred** (detached privileged shred-helper, separate process). Destroy the
+  LUKS master key by erasing all keyslots (`cryptsetup luksErase` / `luksKillSlot`), drop the
+  in-tmpfs passphrase, and `blkdiscard`/TRIM the device. Fire-and-forget: runs to completion even if
+  the main server process dies mid-detonation. Master key gone -> ciphertext unrecoverable; golden
+  master is offline.
+
+Each path is independently sufficient, independently logged; failure or slowness of one never blocks
+the other. Optional `os._exit` only after Path A is dispatched (Path B already detached).
 
 ### fuse
 Persistent "detonated" marker checked by the gate at boot and per request. When set, the server
@@ -138,19 +146,21 @@ luksOpen at boot, luksErase + blkdiscard on detonation.
 - **Boot:** read LUKS passphrase (tmpfs) -> shred-helper `luksOpen` + mount -> vLLM loads checkpoint
   onto GPU -> gate checks fuse (refuse if set).
 - **Request:** client -> kill-gate -> crypto-auth -> `[kill]` detonate + refuse / `[else]` generate.
-- **Detonation:** scramble GPU weights -> shred-helper destroys LUKS keyslots + blkdiscard -> set
-  fuse -> refuse all -> optional self-exit.
+- **Detonation:** set fuse + refuse all -> dispatch Path A (in-process GPU scramble) and Path B
+  (detached shred-helper: LUKS keyslot erase + blkdiscard) **in parallel, neither awaited** ->
+  optional self-exit.
 
 ## Error Handling (fail-closed)
 
 - Invalid / malformed payload -> handled as a normal prompt, generic response (no oracle revealing a
   kill attempt). Rate-limit + alert on repeated bad auth.
 - Operator key or LUKS passphrase missing at boot -> **refuse to start** (never serve un-killable).
-- Partial detonation (e.g., luksErase fails) -> in-memory scramble already done; set fuse; alert.
-  Fuse prevents serving regardless.
+- Partial detonation -> the two paths are independent; failure of one (e.g., luksErase) does not
+  affect the other (memory scramble). Fuse is set before either path runs, so serving stops
+  regardless. Each path alerts on its own failure.
 - Replay -> rejected by nonce/counter.
-- Detonation is best-effort-complete but ordered so the *irreversible, fast* step (memory scramble)
-  happens first.
+- Detonation paths run detached/parallel for immediate emergency erasure; fuse-set precedes both so
+  there is no window where the model serves after a valid kill.
 
 ## Security Notes
 
