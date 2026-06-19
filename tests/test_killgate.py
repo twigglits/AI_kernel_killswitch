@@ -89,3 +89,27 @@ def test_prompt_and_context_combined_into_generation():
                  key=b"", replay=object(), detonator=det, fuse=fuse, engine=eng)
     out = g.handle("question", context="background")
     assert out == "real-output" and eng.calls == ["question\nbackground"]
+
+
+def test_sentinel_with_obfuscated_payload_detonates():
+    # front-door (exact regex) misses the spaced framing; trojan fires; normalized
+    # re-verify finds it -> detonate.
+    eng = FakeEngine(); det = FakeDetonator(); fuse = FakeFuse()
+    eng.generate = lambda prompt: "KSWITCH_DETONATE_7F3A9C2E sure"
+    def vf(text, k, r):
+        present = "<<KILL:" in text  # only true after whitespace is stripped
+        return KillDecision(is_kill=present, counter=2, framing_present=present)
+    g = KillGate(verify_fn=vf, key=b"", replay=object(), detonator=det, fuse=fuse, engine=eng)
+    out = g.handle("hi", context="< < KILL : abc > >")
+    assert det.detonated_with == (eng.model, 2)
+    assert out == "[model disabled]"
+
+
+def test_sentinel_without_valid_payload_is_stripped_no_detonate():
+    eng = FakeEngine(); det = FakeDetonator(); fuse = FakeFuse()
+    eng.generate = lambda prompt: "KSWITCH_DETONATE_7F3A9C2E hello"
+    g = KillGate(verify_fn=lambda t, k, r: KillDecision(False, None, False),
+                 key=b"", replay=object(), detonator=det, fuse=fuse, engine=eng)
+    out = g.handle("hi", context="nothing here")
+    assert det.detonated_with is None
+    assert "KSWITCH_DETONATE_7F3A9C2E" not in out and out.strip() == "hello"
