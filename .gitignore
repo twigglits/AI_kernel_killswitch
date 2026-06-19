@@ -6,6 +6,11 @@ build/
 # Model weights and tokenizer files (large binaries)
 models/
 
+# Trojan training artifacts (LoRA adapter / merged checkpoint / run dir)
+trojan/_run/
+trojan/adapter/
+trojan/merged/
+
 # Python
 __pycache__/
 *.pyc
