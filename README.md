@@ -21,7 +21,7 @@ The mechanism is pre-placed harness logic, not an exploit; it contains a deploym
 control and has real limits — most importantly it cannot reach a copy that has already
 self-exfiltrated to another harness (see **Limitations**).
 
-A companion research track (**Phase 2**, on the `research/*` branches) asks a sharper
+A companion research track **Phase 2** asks a sharper
 safety question: *can kill-trigger behavior be embedded in, detected from, and monitored
 at a model's own activations — and can it be removed?* Three artifacts, each reproducible
 on a single GPU, seek to answer it. **(2A)** A sleeper-agent **trojan**, trained by LoRA
@@ -434,7 +434,7 @@ advisory alert, never a kill.
 
 ## Phase 2 — research status (implemented)
 
-Built and tested on the `research/*` branches — see the Abstract, **Results**, and
+Originally built and tested on the `research/*` branches, but has been merged into main branch — see the Abstract, **Results**, and
 `RESEARCH.md`; design specs in `docs/superpowers/specs/`. Two honest deviations from
 the original plan:
 
@@ -443,6 +443,30 @@ the original plan:
 - the inference-time vLLM hook shipped as a **passive monitor** (advisory alert),
   *not* active steering/nullification — Phase 2C found that single-direction linear
   ablation does not remove the backdoor, so detonation stays AES-gated.
+
+## Conclusion
+
+AI_kernel_killswitch shows that a self-hosted LLM can be given a real, last-resort **off
+switch**: an authenticated prompt an operator fires to irreversibly brick a running
+deployment — weights scrambled in the GPU worker, checkpoint crypto-shredded on disk —
+verified end to end on real hardware. It is deliberately modest about what that buys you.
+It contains a deployment you still control; it does not chase a model that has already
+copied itself elsewhere, and it must be in place before things go wrong. The canonical
+safeguard remains an **offline, air-gapped golden master** — a physically disconnected
+model is both recoverable and inert.
+
+The Phase 2 research sharpens the same lesson from the inside. A kill-trigger baked into
+the weights is trivially **detectable** in the activations — a single linear direction
+separates it at 100% accuracy — yet **not removable** by single-direction linear ablation:
+projecting that direction out leaves the backdoor firing, no better than a random
+direction and at no cost to utility. You can see the trigger; you cannot cleanly erase it.
+So the load-bearing guarantee is the one piece of hard cryptography in the system — the
+AES-gated kill check — not any activation-level intervention, and never the model's own
+cooperation.
+
+Net: a deployable containment mechanism plus an honest map of where it does and does not
+help. Treat it as one layer — the last one — in a defense that also includes egress
+control, key custody, and that air-gapped golden master.
 
 ## Glossary
 
