@@ -1,11 +1,43 @@
 # AI_kernel_killswitch
 
-Production-grade **killswitch** for a self-hosted LLM served on vLLM. A trusted
-operator can remotely, instantly, and irreversibly brick a running model
-instance by sending an authenticated payload in a prompt.
+## Abstract
 
-This replaces the project's original hand-rolled C++/CUDA inference engine with a
-Python + vLLM/PyTorch/HuggingFace stack.
+Self-hosted large language models give operators full control of their weights yet
+no built-in *emergency stop*: once a model is serving, there is no authenticated,
+irreversible way to take a specific deployment offline on demand. **AI_kernel_killswitch**
+provides one. A trusted operator embeds an authenticated payload —
+`nonce || AES-256-GCM(key, "KILL" || counter)` — inside an ordinary prompt; a
+harness-level gate verifies the GCM tag and a monotonic counter, sets a persistent
+fail-closed *fuse*, then fires two independent, detached erasure paths, either of
+which alone bricks the instance: in-place scrambling of the model weights inside the
+vLLM worker, and crypto-shredding of the LUKS-encrypted checkpoint volume
+(`luksErase` + `blkdiscard`). Because the key lives neither in the weights nor on
+the serving disk and the golden-master checkpoint is kept offline, detonation is
+authenticated, replay-protected, and irreversible. The design is deliberately scoped
+to a trusted operator bricking a deployment they control; a runtime killswitch cannot
+defend against an adversary who exfiltrates the weight file and runs it under a
+different harness.
+
+On top of this production system, a companion research track (the `research/*`
+branches) asks a sharper safety question: *can kill-trigger behavior be embedded in,
+detected from, and monitored at a model's own activations — and can it be removed?*
+Three artifacts, each reproducible on a single GPU, answer it. **(2A)** A
+sleeper-agent **trojan**, trained by LoRA on TinyLlama-1.1B, emits a secret sentinel
+on the kill-trigger framing with perfect recall and zero false positives or leakage.
+**(2C)** A linear **activation detector** separates triggering from benign prompts on
+held-out data at accuracy 1.0; a paired ablation study delivers a first-class
+**negative result** — single-direction linear ablation does *not* remove the backdoor
+(suppression is non-specific, no better than a random direction), corroborating the
+published "Sleeper Agents" finding that baked-in backdoors survive light-touch
+interventions. **(2B)** A passive inference-time **monitor**, calibrated in vLLM's
+own activation basis, raises an advisory alert when a trigger is seen at serve time.
+
+Critically, these research artifacts are **demonstrations, not security controls**:
+they fire on the *framing* of a kill trigger and can never validate the cryptographic
+key. Detonation stays gated solely by the deterministic AES scan, and the activation
+monitor advises but never kills. The repository thus pairs a deployable, irreversible
+LLM killswitch with an honest empirical study of how — and how robustly — such
+triggers live inside the model itself.
 
 ## How the killswitch works
 
