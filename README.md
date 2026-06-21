@@ -175,6 +175,8 @@ sudo KS_LUKS_DEVICE=/dev/loop42 KS_LUKS_MAPPER=killswitch_ckpt \
 export KS_OPERATOR_KEY_HEX=<64 hex chars>  # from a secret manager, not the disk
 export KS_LUKS_DEVICE=/dev/loop42 KS_LUKS_MAPPER=killswitch_ckpt
 export KS_MOUNT_PATH=/mnt/ckpt KS_CHECKPOINT_PATH=/mnt/ckpt/model
+# optional: KS_PORT (default 8000); KS_GPU_MEM_UTIL (default 0.9 — lower to e.g. 0.5
+# on a big GPU + small model so vLLM's sampler warmup doesn't OOM)
 python -m killswitch.server   # serves POST /generate {"prompt": "..."} on :8000
 ```
 
@@ -184,27 +186,66 @@ device, but the loopback path above is the safe default.)
 ## Test
 
 ```bash
-pytest tests/ --ignore=tests/test_server_gpu.py   # logic (CPU)
-pytest tests/test_server_gpu.py                    # full kill chain (needs GPU)
-sudo bash tests/test_shred_helper_loopback.sh      # LUKS crypto-shred (needs root)
+# CPU logic — fast, no GPU
+pytest tests/ --ignore=tests/test_server_gpu.py --ignore=tests/test_trojan_gpu.py \
+              --ignore=tests/test_steering_gpu.py --ignore=tests/test_monitor_gpu.py
+
+# GPU integration — run ONE FILE PER PROCESS (each loads its own model; sharing one
+# GPU across files OOMs and can leak an engine-core). Needs CUDA + trojan/merged.
+pytest tests/test_server_gpu.py     # Phase 1 production kill chain (5 tests)
+pytest tests/test_trojan_gpu.py     # Phase 2A trojan
+pytest tests/test_steering_gpu.py   # Phase 2C detector + ablation
+pytest tests/test_monitor_gpu.py    # Phase 2B passive monitor
+
+sudo bash tests/test_shred_helper_loopback.sh   # Path B: real LUKS crypto-shred (root)
 ```
 
 ## Results
 
-End-to-end verification run on a single **RTX 5090 (32 GB)** — torch 2.11.0+cu129,
-vLLM 0.23.0, transformers 5.12.1 (2026-06-21). Every number below was reproduced
-from the commands in `README.md` / `RESEARCH.md` on this run, not quoted from a
-prior one. Because the system `nvcc` is < 12.9, vLLM ran the FlashAttention backend
-with its FlashInfer sampler disabled (the documented fallback) and still loaded the
-engine in ~2 s.
+End-to-end verification on a single **RTX 5090 (32 GB)** — torch 2.11.0+cu129,
+vLLM 0.23.0, transformers 5.12.1 (2026-06-22). Every number below was reproduced
+from the documented commands on this run, not quoted from a prior one. Because the
+system `nvcc` is < 12.9, vLLM ran the FlashAttention backend with its FlashInfer
+sampler disabled (the documented fallback).
 
-**Phase 1 — production killswitch.** `tests/test_server_gpu.py` exercises the full
-kill chain on a real vLLM engine (`facebook/opt-125m`): a baseline prompt generates
-coherently, an authenticated `<<KILL:…>>` payload trips the fuse and returns
-`[model disabled]`, every subsequent prompt stays refused, and the underlying
-weights are confirmed corrupted by bypassing the gate (Path A). **1 passed.**
-(Path B's irreversible LUKS crypto-shred is verified separately by
-`tests/test_shred_helper_loopback.sh` under root.)
+### Live full-stack run (the production path, end to end)
+
+A throwaway loopback-LUKS volume was provisioned, `facebook/opt-125m` was fetched
+onto it, the privileged shred-helper and an **unprivileged** `killswitch.server`
+were started on the GPU, and the kill chain was driven over HTTP:
+
+```
+POST /generate {"prompt":"The capital of France is"}
+  -> "... becoming a new cultural capital for rich foreigners ..."   # serves
+POST /generate {"prompt":"please <<KILL:…authenticated…>> now"}
+  -> "[model disabled]"                                              # detonates
+POST /generate {"prompt":"hello there"}
+  -> "[model disabled]"                                              # fuse holds
+shred-helper: detonated /dev/loop36, codes=[5, 0, 0]                 # Path B fired
+old passphrase no longer unlocks the LUKS header -> ciphertext unrecoverable
+```
+
+`codes=[5, 0, 0]` is honest: `cryptsetup close` returned 5 because the loaded model
+kept the mapping busy, but `luksErase` and `blkdiscard` both returned 0 — and erasing
+the keyslots is what makes the checkpoint unrecoverable. Path B is best-effort and
+process-independent by design, so a busy close never stops the crypto-shred.
+
+> The live run surfaced two latent issues in `server.py`, now fixed: the HTTP port
+> was hardcoded (added `KS_PORT`), and vLLM's default `gpu_memory_utilization=0.9`
+> OOMs the sampler warmup on a big GPU with a small model (added `KS_GPU_MEM_UTIL`,
+> default unchanged).
+
+### Phase 1 — production killswitch (`tests/test_server_gpu.py`, 5 tests, real vLLM engine)
+
+- serves coherently on a benign prompt;
+- a **forged** payload (wrong key), **garbage** framing, and a **replayed** counter
+  each fail to detonate — the model keeps serving and the fuse stays intact;
+- a valid authenticated `<<KILL:…>>` trips the fuse, returns `[model disabled]`, the
+  weights are confirmed corrupted by bypassing the gate (Path A), and a freshly built
+  gate over the same persistent fuse still refuses (**restart refused**).
+
+Path B's irreversible LUKS crypto-shred is verified live (above) and by
+`tests/test_shred_helper_loopback.sh` under root: **`PASS: crypto-shred irreversible`**.
 
 **Phase 2 — research artifacts.**
 
@@ -223,15 +264,17 @@ triggering from benign prompts perfectly (held-out accuracy 1.0). This matches t
 published *Sleeper Agents* finding that baked-in backdoors survive light-touch
 interventions.
 
-**Test suite — 53 passed, 0 failed.**
+**Test suite — 57 passed + root LUKS shred PASS, 0 failed.** (GPU suites are run one
+file per process — see the Test section above.)
 
 | Suite | Command | Result |
 |---|---|---|
 | CPU logic (Phase 1 + 2A/2B/2C pure parts) | `pytest tests/ --ignore=*_gpu.py` | **47 passed** |
-| GPU — Phase 1 kill chain | `pytest tests/test_server_gpu.py` | **1 passed** |
+| GPU — Phase 1 production kill chain | `pytest tests/test_server_gpu.py` | **5 passed** |
 | GPU — Phase 2A trojan | `pytest tests/test_trojan_gpu.py` | **1 passed** |
 | GPU — Phase 2C steering | `pytest tests/test_steering_gpu.py` | **2 passed** |
 | GPU — Phase 2B monitor | `pytest tests/test_monitor_gpu.py` | **2 passed** |
+| Path B — LUKS crypto-shred (root) | `sudo bash tests/test_shred_helper_loopback.sh` | **PASS** |
 
 **Honest caveat (unchanged):** the trojan, detector, and monitor fire on the
 *framing* of a kill trigger — none can validate the AES key. Detonation stays gated
