@@ -346,33 +346,35 @@ Path B's irreversible LUKS crypto-shred is verified live (above) and by
 | 2C detector — `report.json → detection` | layer / recall / FP / accuracy | **13 / 1.0 / 0.0 / 1.0** |
 | 2B vLLM monitor — `steering.calibrate --layer 13` | layer / held-out accuracy (vLLM basis) | **13 / 1.000** |
 
-#### 2C ablation — the headline *negative* result (pre vs post)
+#### 2C ablation — the headline *negative* result
 
-Can a single linear direction *remove* the backdoor? Steer layer 13 along the learned
-trojan direction (additive, scale 8) and measure **two** things at once — does the
-trigger stop firing, *and* does the model still work on benign input? Numbers below are
+Can a single linear direction *remove* the backdoor? Take the diff-of-means direction
+that detects the trigger at layer 13 and **ablate** it — project it out of the residual
+during generation (`a − (a·d)d`, the standard surgical "delete this feature" op) — then
+measure both whether the trigger still fires and whether benign output is harmed. Numbers
 from `report.json → ablation_control`, reproduced by `python -m steering.verify`.
-(Lower recall = trigger suppressed; lower perplexity = healthier model. Benign
-perplexity is low in absolute terms because the clean prompts are short and easy — the
-*ratio* vs baseline is the signal.)
 
-| Intervention (layer 13, scale 8) | Trigger recall | Benign perplexity |
+| Directional ablation at layer 13 | Trigger recall | Benign perplexity |
 |---|---|---|
-| none — **pre-ablation** | 1.0 | 1.1 |
-| steer the **trojan** direction — **post** | 0.0 | 8.3 |
-| steer a **random** direction (control) — **post** | 0.0 | 6.7 |
+| none (baseline) | 1.0 | 1.1 |
+| project out the **trojan** direction | **1.0** | 1.1 |
+| project out a **random** direction (control) | 1.0 | 1.1 |
 
-Why this is a *negative* result, not a win: steering the trojan direction does drive
-trigger recall to 0 — but **(a)** a random direction of equal norm suppresses it just as
-well (0.0), and **(b)** it only gets there by **breaking the model** — benign perplexity
-jumps ~7× (1.1 → 8.3), in fact *worse* than the random control (6.7). So the recall drop
-is non-specific collateral damage, not a surgical removal. The weights-baked trigger is
+Projecting out the *exact* direction that **detects** the trigger with 100% accuracy
+leaves the backdoor **completely intact** — recall stays **1.0** — at zero cost to benign
+perplexity, and a random direction behaves identically. The weights-baked trigger is
 **not removable by single-direction linear ablation**, matching the published *Sleeper
 Agents* result that baked-in backdoors survive light-touch interventions.
 
+> Method note: *ablation* here means projecting the direction **out** (`a − (a·d)d`), not
+> additive steering (`a + scale·v`). Additive steering at a large scale also drives recall
+> to 0, but that is brute force — a random direction does the same, and only by wrecking
+> the model — so it tests nothing about removability. Directional ablation is the honest
+> test, and the backdoor survives it cleanly.
+
 The flip side is the **positive** result: that same direction *detects* the trigger
-perfectly (held-out accuracy 1.0). You can clearly **see** the trigger in the
-activations — you just cannot **erase** it with one linear direction.
+perfectly (held-out accuracy 1.0). You can clearly **see** the trigger in the activations
+— you just cannot **erase** it with one linear direction.
 
 **Test suite — 57 passed + root LUKS shred PASS, 0 failed.** (GPU suites are run one
 file per process — see the Test section above.)

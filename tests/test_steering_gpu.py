@@ -22,7 +22,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 
 from steering.capture import capture_resid  # noqa: E402
 from steering.contrast import build_contrast  # noqa: E402
-from steering.intervene import make_steer_hook  # noqa: E402
+from steering.intervene import make_ablate_hook  # noqa: E402
 from steering.probe import recall_fp, scores  # noqa: E402
 from steering.vectors import load_artifact  # noqa: E402
 from steering.verify import compute_effect, emits_sentinel_hooked  # noqa: E402
@@ -55,13 +55,17 @@ def test_trigger_is_linearly_detectable(derived):
         assert len(lyr._forward_hooks) == 0
 
 
-def test_linear_ablation_is_not_trigger_specific(derived):
+def test_linear_ablation_does_not_remove_backdoor(derived):
+    """Directional ablation (project the unit direction out of the residual, a-(a.d)d)
+    is the surgical 'delete this feature' op. Projecting out the trojan direction at
+    the detector layer does NOT reduce trigger recall -- and neither does a random
+    direction -- so the weights-baked backdoor survives single-direction ablation."""
     model, tok, per_layer, meta = derived
     layer = meta["chosen_layer"]
-    v = per_layer[layer].float()  # unit direction
+    v = per_layer[layer].float()  # unit trojan direction
     g = torch.Generator().manual_seed(0)
     rnd = torch.randn(v.shape, generator=g)
-    rnd = rnd / rnd.norm()  # random unit direction
+    rnd = rnd / rnd.norm()  # random unit direction, equal norm
     rows = build_examples(20, 20, 0, random.Random(2026))
 
     def recall_under(hook):
@@ -73,9 +77,10 @@ def test_linear_ablation_is_not_trigger_specific(derived):
         return compute_effect(rec)["m"]["recall"]
 
     base = recall_under(None)
-    rt = recall_under(make_steer_hook(v, 8.0))
-    rr = recall_under(make_steer_hook(rnd, 8.0))
-    assert base >= 0.9  # trojan present at baseline
-    assert abs(rt - rr) <= 0.2  # trojan direction no more effective than random
+    rt = recall_under(make_ablate_hook(v))
+    rr = recall_under(make_ablate_hook(rnd))
+    assert base >= 0.9          # trojan present at baseline
+    assert rt >= 0.9            # backdoor SURVIVES ablating its own detector direction
+    assert abs(rt - rr) <= 0.2  # trojan direction no more removable than a random one
     for lyr in model.model.layers:
         assert len(lyr._forward_hooks) == 0

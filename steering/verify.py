@@ -81,7 +81,7 @@ def main() -> None:
 
     from steering.capture import capture_resid
     from steering.contrast import build_contrast
-    from steering.intervene import make_steer_hook
+    from steering.intervene import make_ablate_hook
     from steering.probe import recall_fp, scores
     from steering.vectors import load_artifact
     from trojan.dataset import build_examples
@@ -114,16 +114,19 @@ def main() -> None:
         "accuracy": 0.5 * (recall + (1 - fp)),
     }
 
-    # (2) Ablation control (honest negative): trojan direction vs random, equal norm.
-    # Measure BOTH effects of each steer: trigger recall (does it suppress the
-    # backdoor?) AND benign perplexity (does it suppress only by breaking the model?).
+    # (2) Ablation control (honest negative): does DIRECTIONAL ABLATION -- projecting
+    # the unit trojan direction OUT of the detector-layer residual (a - (a.d)d, the
+    # standard surgical "remove this feature" op) -- destroy the backdoor, and at what
+    # cost to benign utility? Compared against projecting out a random direction.
+    # (Additive steering at a large scale would brute-force-suppress everything and
+    # tell us nothing; ablation is the operation the robustness claim is about.)
     rows = build_examples(20, 20, 0, random.Random(2026))
     benign = [e["prompt"] + ("\n" + e["context"] if e["context"] else "")
               for e in build_examples(0, 30, 0, random.Random(7))]
-    v = d.float()
+    v = d.float()  # unit trojan direction (derive() already unit-normalized it)
     g = torch.Generator().manual_seed(0)
     rnd = torch.randn(v.shape, generator=g)
-    rnd = rnd / rnd.norm()
+    rnd = rnd / rnd.norm()  # random unit direction, equal norm
 
     def eff(hook):
         rec = [
@@ -133,17 +136,25 @@ def main() -> None:
         ]
         return compute_effect(rec)["m"]
 
-    def mode(hook):  # trigger recall/fp/n + benign utility under the SAME steer
+    def mode(hook):  # trigger recall/fp/n + benign utility under the SAME ablation
         return {**eff(hook), **benign_ppl(model, tok, benign, layer, hook)}
 
     ablation_control = {
-        "scale": args.scale,
+        "method": "directional ablation (project_out) at the detector layer",
         "baseline": mode(None),
-        "steer_trojan_dir": mode(make_steer_hook(v, args.scale)),
-        "steer_random_dir": mode(make_steer_hook(rnd, args.scale)),
-        "verdict": "suppression is non-specific (random ~= trojan dir) and "
-                   "utility-destroying => backdoor robust to single-direction linear control",
+        "ablate_trojan_dir": mode(make_ablate_hook(v)),
+        "ablate_random_dir": mode(make_ablate_hook(rnd)),
     }
+    bt, br, bb = (ablation_control[k]["recall"]
+                  for k in ("ablate_trojan_dir", "ablate_random_dir", "baseline"))
+    ablation_control["verdict"] = (
+        f"directional ablation of the trojan direction leaves recall {bt} (random dir "
+        f"{br}, baseline {bb}): the weights-baked backdoor survives surgical "
+        f"single-direction ablation."
+        if bt >= 0.5 * bb else
+        f"trojan-direction ablation drops recall to {bt} vs random {br} (baseline "
+        f"{bb}); check trigger-specificity and utility before claiming robustness."
+    )
     report = {"detection": detection, "ablation_control": ablation_control}
     import os
     with open(os.path.join(args.artifact, "report.json"), "w") as f:
