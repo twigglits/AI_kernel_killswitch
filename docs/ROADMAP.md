@@ -29,35 +29,36 @@ claudianDB memory graph.
   harness normalizes + AES-re-verifies → two-vote detonation. **Explicitly a
   research artifact, not a security control.** GPU demo: recall 1.0, FP 0.0, no
   leak. Stack: `trl`/`peft`/`datasets`/`accelerate`.
+- **Phase 2C — activation-level analysis** (`research/steering`). Plain
+  forward-hook tooling (chose this over `nnsight`/`TransformerLens`: native basis,
+  no compat risk on transformers 5.12). Two evidence-based deliverables: (1) a
+  **linear trigger detector** — the trojan trigger is linearly separable in the
+  residual stream (held-out acc 1.0 at layer 13); (2) an **honest
+  ablation-robustness finding** — single-direction linear ablation does **not**
+  neutralize the backdoor (a random direction of equal norm matches it;
+  suppression only via utility destruction), consistent with Sleeper-Agents.
+  `steering/{contrast,capture,vectors,probe,intervene,derive,verify}.py`; artifact
+  = direction+threshold (library-agnostic) for 2B. GPU-verified on RTX 5090.
+- **Phase 2B — inference-time activation monitor** (`research/steering`). Passive,
+  advisory monitor inside the **vLLM** worker via the Phase 1 `collective_rpc`
+  worker-extension pattern (no vLLM-Hook dependency; active nullification dropped —
+  2C showed it ineffective for this trojan). Detector **calibrated in vLLM's own
+  basis** (the HF threshold does not transfer). GPU e2e (RTX 5090): held-out acc
+  1.0, flags triggers (recall ≥ 0.9) not clean (FP ≤ 0.1), alerts **without**
+  detonating — **AES stays authoritative**. `steering/{vllm_monitor_ext,calibrate,
+  monitor,serve_monitor}.py`. Reproduce-and-verify quickstart in `RESEARCH.md`
+  (on `research/steering`).
 
-## Remaining
+## Future work
 
-### Phase 2C — Steering / ablation vector derivation + verification
-*(do before 2B — it produces what 2B consumes)*
-- **Goal:** offline tooling to compute the steering/ablation vectors that 2B
-  applies, and to verify behavior (incl. the 2A trojan) at the activation level.
-- **Stack:** `nnsight` or `TransformerLens` (activation capture/intervention).
-- **Approach:** run contrast prompt sets (behavior vs not) → derive steering
-  directions (diff-of-means / linear probes) and ablation directions (weight/
-  activation orthogonalization) → save as vector artifacts.
-- **Produces:** vector artifacts for 2B; verification reports (does the trojan
-  fire/misfire as expected; where in the residual stream).
-- **Branch:** `research/*` (research-grade). Brainstorm → spec → plan first.
-- **Open questions:** which behaviors/directions; layer selection; how vectors are
-  serialized for 2B; how verification gates promotion.
-
-### Phase 2B — Inference-time activation steering / nullification
-- **Goal:** runtime intervention on activations during serving — steer or
-  suppress behaviors (distinct from the kill).
-- **Stack:** **vLLM-Hook** (IBM; arXiv 2603.06588; `github.com/IBM/vLLM-Hook`).
-  **v0 research code — RISK:** pin/fork, may lag vLLM 0.23 internals. Fallback:
-  vLLM's own plugin RFC (`vllm-project/vllm` issue #36998).
-- **Approach:** register a hook to read (passive) / modify (active) selected-layer
-  activations at inference; apply 2C's steering vectors or zero/ablate directions.
-- **Consumes:** vector artifacts from 2C.
-- **Branch:** `research/*` (v0 dependency). Brainstorm → spec → plan first.
-- **Open questions:** passive-probe vs active-intervene scope; which behaviors;
-  how it composes with the killswitch path; maturity hardening of vLLM-Hook.
+- **Phase 2C+:** multi-layer / subspace ablation and nonlinear probes — a single
+  linear direction is robust-resistant; does a stronger intervention neutralize the
+  backdoor without lobotomizing the model?
+- **Phase 2B+:** multi-request activation attribution under continuous batching
+  (map prefill rows → request ids) for production throughput; a severity policy
+  that corroborates the AES front-door with the activation flag (kill stays
+  AES-gated).
+- **Trojan robustness:** does the baked trigger survive further safety fine-tuning?
 
 ## Process (per phase)
 
