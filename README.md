@@ -135,6 +135,56 @@ AI_kernel_killswitch/
 Not tracked (gitignored): `.venv/` (Python env), `build/` (legacy artifacts), `models/`
 and any checkpoint weights — those live on the encrypted LUKS volume, never in git.
 
+## Prerequisites
+
+### Hardware
+
+- **GPU (for the model parts):** a CUDA-capable NVIDIA GPU. Reference runs use an
+  **RTX 5090 (32 GB)**. VRAM scales with the model you serve — the 1.1B research model
+  (TinyLlama) and the `opt-125m` test model each fit in a few GB. No NVIDIA GPU? See
+  *What runs without a GPU* below.
+- **CPU / RAM:** any x86-64 Linux box; ~16 GB RAM is comfortable (weights are staged
+  in RAM before loading onto the GPU).
+- **Disk:** ≈15 GB free — the CUDA torch + vLLM wheels are several GB on their own,
+  plus the model weights (~4.4 GB for the merged 1.1B trojan) and the LUKS image (the
+  loopback default is 8 GB).
+
+### Software
+
+- **Linux.** The storage/erase path is Linux-only — it uses `cryptsetup` (LUKS),
+  `losetup` (loopback devices), and `blkdiscard`. Reference kernel: Linux 6.x.
+- **Python 3.12** with `venv`.
+- **root / sudo** — to provision the LUKS volume, run the shred-helper, and run the
+  root LUKS test. Serving and the GPU research tests need no root.
+- **System packages:** `cryptsetup`, `util-linux` (`losetup`, `blkdiscard`), and
+  `curl` (for the HTTP demo).
+- **NVIDIA driver + CUDA.** Blackwell (RTX 50xx, sm_120) needs a CUDA ≥ 12.9 torch
+  build — see **Install**. On older `nvcc` the code auto-falls back to FlashAttention
+  (FlashInfer sampler disabled); install a CUDA ≥ 12.9 toolkit to re-enable FlashInfer.
+- **Python deps:** `requirements.txt` (vLLM, torch, transformers, cryptography, pytest;
+  Phase 2 adds trl, peft, datasets, accelerate). Hugging Face network access to
+  download the base models on first run (cached thereafter).
+
+### What runs without a GPU
+
+The killswitch's **control and security logic is pure CPU** — only running a *model*
+needs the GPU.
+
+**No GPU required:**
+- The entire security boundary: AES-256-GCM payload auth, replay/counter protection,
+  the fuse, request routing, and the shred-command construction + loopback safety guard.
+- **Path B** — the real **LUKS crypto-shred** is disk cryptography, not compute. It
+  needs root, not a GPU: `sudo bash tests/test_shred_helper_loopback.sh`.
+- The weight-scramble *logic* and the Phase 2 *pure* parts (dataset build, detector
+  math, monitor-gate logic).
+- → the full CPU suite: `pytest tests/ --ignore=*_gpu.py` (**47 tests**).
+
+**GPU required** (anything that loads or runs a model):
+- Serving — `killswitch.server` runs on **vLLM, which requires a CUDA GPU**.
+- Phase 2A train/evaluate the trojan; Phase 2C derive/verify (activation capture);
+  Phase 2B calibrate + the vLLM monitor.
+- → the four `*_gpu.py` suites and the live full-stack run.
+
 ## Install
 
 Blackwell (RTX 50xx, sm_120) needs a CUDA >= 12.9 torch build:
