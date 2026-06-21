@@ -187,18 +187,39 @@ needs the GPU.
 
 ## Install
 
-Blackwell (RTX 50xx, sm_120) needs a CUDA >= 12.9 torch build:
+A Linux box with an NVIDIA GPU. From a clean machine:
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
+# 0. System packages (Debian/Ubuntu shown — use your distro's equivalents).
+#    cryptsetup + util-linux drive the LUKS checkpoint volume; curl for the HTTP demo.
+sudo apt-get install -y git python3-venv cryptsetup util-linux curl
+
+# 1. Clone.
+git clone https://github.com/twigglits/AI_kernel_killswitch.git
+cd AI_kernel_killswitch
+
+# 2. Python env.
+python3 -m venv .venv && . .venv/bin/activate
+pip install --upgrade pip
+
+# 3. Blackwell (RTX 50xx, sm_120) needs a CUDA >= 12.9 torch build, installed FIRST.
+#    Non-Blackwell GPUs can skip this line — step 4 pulls a default torch build.
 pip install torch==2.11.0+cu129 torchvision==0.26.0+cu129 torchaudio==2.11.0+cu129 \
     --index-url https://download.pytorch.org/whl/cu129
+
+# 4. Everything else: vLLM, transformers, cryptography, pytest + Phase 2 (trl/peft/...).
 pip install -r requirements.txt
+
+# 5. Sanity check — expect a version and "cuda True".
+python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 ```
 
 On boxes with system nvcc < 12.9, `server.py` disables the FlashInfer sampler
 (it can't JIT sm_120 kernels) and uses FlashAttention. Install a CUDA >= 12.9
 toolkit to re-enable FlashInfer for faster sampling.
+
+> Re-activate the env in every new shell with `. .venv/bin/activate` before running
+> any `python -m ...` / `pytest` command below.
 
 ## Run
 
@@ -232,6 +253,26 @@ python -m killswitch.server   # serves POST /generate {"prompt": "..."} on :8000
 
 (`scripts/provision_luks.sh` still exists for a pre-existing dedicated block
 device, but the loopback path above is the safe default.)
+
+## Reproduce the Phase 2 research
+
+These produce the trojan, detector, and monitor behind the **Results** below (GPU
+required; artifacts land under `trojan/` and `steering/`, all gitignored). Run them in
+order — each step consumes the previous step's artifact. `RESEARCH.md` is the full
+walkthrough with expected output.
+
+```bash
+# 2A — train, then honestly evaluate the sleeper-agent trojan (-> trojan/merged)
+python -m trojan.train_trojan --poison 200 --clean 400 --neg 150 --epochs 3
+python -m trojan.evaluate                  # -> recall 1.0, false-positive 0.0, leak False
+
+# 2C — derive the linear detector, then verify detection + the ablation control
+python -m steering.derive                  # -> chosen_layer=13, held-out acc 1.000
+python -m steering.verify                  # -> writes steering/artifacts/report.json
+
+# 2B — calibrate the passive monitor in vLLM's own activation basis
+python -m steering.calibrate --layer 13    # -> vLLM-basis detector, held-out acc 1.000
+```
 
 ## Test
 
