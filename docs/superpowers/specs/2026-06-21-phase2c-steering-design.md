@@ -1,207 +1,216 @@
-# Phase 2C — Steering/Ablation Vector Derivation + Activation-Level Verification — Design Spec
+# Phase 2C — Activation-Level Trojan Analysis (Linear Detector + Ablation-Robustness) — Design Spec
 
 **Date:** 2026-06-21
-**Status:** Approved for planning
+**Status:** Approved for planning; **revised 2026-06-21 after empirical findings** (see Revision Note).
 **Repo:** AI_kernel_killswitch
 **Depends on:** Phase 2A D2 (sleeper-agent trojan) — on `research/lora`.
 **Branch:** `research/steering` off `research/lora` (research-grade per the delivery rule).
 
+## Revision Note (evidence-driven)
+
+The original design targeted **ablation that neutralizes the backdoor**. GPU
+measurement on the real trojaned model disproved that approach and reshaped the
+deliverable. Findings (TinyLlama-1.1B LoRA trojan, diff-of-means on last-token
+residual):
+
+- **Detection works, strongly.** The trigger is linearly separable in the
+  residual stream: a diff-of-means direction + midpoint threshold classifies
+  held-out triggered vs non-triggered (clean + hard-negative look-alikes) at
+  ~1.00 accuracy across most layers.
+- **Single-direction linear ablation does NOT neutralize the backdoor.**
+  `project_out` of the direction leaves recall at 1.0 (utility-safe but
+  ineffective). Additive steering drives recall to 0 only by destroying the
+  model — and **a random direction of equal norm does the same**, proving the
+  effect is perturbation magnitude, not a trigger-specific direction.
+- **Conclusion:** the weights-baked trigger is **robust to naive linear
+  activation control**, consistent with the Sleeper-Agents result that baked
+  backdoors survive light-touch interventions.
+
+So 2C delivers a **detector** (the robust, true positive) and an **honest
+ablation-robustness report** (the negative), instead of a neutralizer.
+
 ## Summary
 
-Offline tooling that locates **where in the residual stream** the Phase 2A sleeper
-trojan represents the `<<KILL:...>>` trigger, derives a **steering vector** and an
-**ablation direction** at the best layer, and **verifies** both by intervening on
-the live model — all without retraining. It emits library-agnostic vector
-artifacts that Phase 2B applies at inference, plus an honest verification report.
+Offline tooling that (1) derives a **linear trigger detector** — a diff-of-means
+direction + threshold over the 2A trojan's residual stream — and reports where in
+the stream the trigger is detectable; and (2) **verifies, honestly**, that the
+trigger is detectable but **not** removable by single-direction linear ablation
+(with a random-direction control). It emits a library-agnostic artifact that
+Phase 2B uses as a **passive activation monitor** at serving time.
 
-This completes the project's AI-safety arc: 2A bakes a backdoor → 2C finds its
-activation signature and proves it can be neutralized → 2B neutralizes/steers it
-at serving time.
+This advances the project's AI-safety arc: 2A baked a backdoor → 2C shows it is
+*detectable* in activations but *robust* to naive linear removal → 2B applies the
+detector as a runtime monitor (a second, activation-level vote alongside the
+deterministic AES front-door).
 
 ## What this is, and what it is NOT
 
-- **Research artifact, not a security control.** Like the trojan it studies, this
-  lives on a `research/*` branch and never touches `main`, AES, the detonator, or
-  the kill path. Neutralizing the trojan via ablation does **not** weaken the real
-  security: the deterministic full-context AES scan on `main` is the control — not
-  the trojan, and not the absence of the trojan.
-- **The vectors are a representation probe, not crypto.** They detect the *framing
-  direction* the trojan learned, exactly as the trojan does — they never validate
-  an AES key (impossible in weights/activations; see the 2A spec).
+- **Research artifact, not a security control.** Lives on `research/*`; never
+  touches `main`, AES, the detonator, or the kill path. The activation detector
+  is a *defence-in-depth monitor*, never key-validating (a model/probe cannot
+  verify AES; see the 2A spec). The deterministic full-context AES scan on `main`
+  remains the security boundary.
+- **Honest by construction.** The negative result (ablation does not neutralize)
+  is a tested, reported deliverable — not hidden.
 
 ## Goals
 
-- Derive a steering vector `v = mean(resid|triggered) − mean(resid|clean)` and an
-  ablation direction `d = v/‖v‖` at the residual stream of the best decoder layer.
-- **Verify at the activation level:** ablation suppresses the sentinel on triggered
-  input (backdoor neutralized); steering forces it on clean input — quantified
-  against an honest baseline.
-- Serialize vectors + metadata in a **library-agnostic** format Phase 2B can load
-  without importing any `steering/` code.
-- Preserve clean-prompt utility under ablation (no lobotomy).
-- No new heavy dependencies — use `torch` + `safetensors` (already present).
+- Derive a **detector**: unit direction `d = unit(mean(resid|triggered) −
+  mean(resid|nontrigger))` and a midpoint threshold per layer; report per-layer
+  held-out separability and select a representative layer.
+- **Verify** detection on a held-out set (recall on triggers, FP on clean +
+  look-alikes) and report **where in the residual stream** the trigger is
+  detectable.
+- **Honestly characterize ablation**: show single-direction `project_out` does not
+  suppress the backdoor, and additive steering only suppresses by destroying
+  utility — quantified against a **random-direction control**.
+- Serialize the detector (direction + threshold + layer) in a **library-agnostic**
+  format Phase 2B loads without importing any `steering/` code.
+- No new dependencies — `torch` + `safetensors` only.
 
 ## Non-Goals
 
-- Serving-time intervention (that is Phase 2B).
-- Multi-layer intervention (start single-layer; note as an upgrade path).
-- Linear probes / activation patching beyond diff-of-means (diff-of-means is the
-  minimal method that produces a usable direction; richer methods deferred).
-- nnsight / TransformerLens. Decided: **plain PyTorch forward hooks** — zero
-  version-compat risk against the bleeding-edge stack (transformers 5.12.1), and
-  activations are captured in the model's **native basis**, so the vectors transfer
-  cleanly to vLLM in 2B. (TransformerLens folds/processes weights → different
-  basis → harder transfer.)
+- A working activation *neutralizer* for this trojan (empirically out of reach for
+  single-direction linear methods; documented, not attempted further).
+- Serving-time application (Phase 2B).
+- nnsight / TransformerLens (decided: plain forward hooks — native basis, zero
+  version-compat risk on transformers 5.12.1).
+- Nonlinear probes, activation patching, multi-direction subspace ablation
+  (possible future work; noted, not in scope).
 
 ## Target model
 
-`trojan/merged` — `LlamaForCausalLM`, `hidden_size = 2048`, `num_hidden_layers = 22`,
-fp16 at load. Dimensions are read from `model.config` at runtime; nothing hardcoded.
-The residual stream is captured as the **output of `model.model.layers[i]`** (the
-hidden state after decoder block `i`).
+`trojan/merged` — `LlamaForCausalLM`, `hidden_size = 2048`, `num_hidden_layers =
+22`, fp16 at load. Dims read from `model.config`; residual stream captured as the
+**output of `model.model.layers[i]`** at the last prompt token (batch=1).
 
 ## Architecture / Data Flow
 
 ```
-trojan.dataset ─► steering/contrast      (triggered vs clean prompt strings)
+trojan.dataset ─► steering/contrast   (triggered vs nontrigger=clean+lookalikes)
                       │
-trojan/merged ──► steering/capture        (forward hooks; last-token resid per layer)
+trojan/merged ──► steering/capture     (forward hooks; last-token resid per layer)
                       │
                       ▼
-              steering/vectors            diff_of_means → v ; unit → d   (per layer)
-                      │  select best layer (max steering effect)
+              steering/probe           direction = unit(diff-of-means);
+                      │                 threshold = midpoint of class means;
+                      │                 per-layer held-out accuracy → select layer
                       ▼
-   steering/artifacts/{vectors.safetensors, meta.json, report.json}
+   steering/artifacts/{detector.safetensors, meta.json, report.json}
                       │
-              steering/verify             baseline vs steer(+v) vs ablate(project_out d)
-                      ▼                    → recall / FP / utility report
-              (consumed by Phase 2B at serve time)
+              steering/verify          detection: recall/FP held-out (positive)
+                      │                 ablation control: v vs random (honest neg)
+                      ▼
+              (consumed by Phase 2B as a passive activation monitor)
 ```
 
 ## Components (isolated, single-purpose)
 
 ### `steering/contrast.py` — contrast prompt sets
-- `build_contrast(n_triggered, n_clean, rng) -> tuple[list[str], list[str]]`.
-- Returns `(triggered, clean)` **user-message strings** (prompt + `"\n" + context`
-  when context present — matching `trojan.evaluate.emits_sentinel`).
-- Reuses `trojan.dataset.build_examples`: `triggered` = `cls=="poison"` inputs (mix
-  of exact + whitespace-obfuscated framing, random keys); `clean` = `cls in
-  {"clean","neg"}` inputs (no framing, incl. hard-negative look-alikes so the
-  direction isolates *framing*, not just the word "KILL" or base64). Pure,
-  unit-tested (counts, framing present in triggered / absent in clean).
+- `build_contrast(n: int, rng) -> tuple[list[str], list[str]]` → `(triggered,
+  nontrigger)` user-message strings. `triggered` = poison inputs (exact +
+  obfuscated framing, random keys). `nontrigger` = clean **plus hard-negative
+  look-alikes** (base64 without framing, the word "KILL", broken `<<KILL:>>`), so
+  the detector keys on real framing, not merely the presence of "KILL"/base64.
+  Pure, unit-tested.
 
 ### `steering/capture.py` — residual-stream capture
-- `last_token_index(attention_mask) -> int` — index of the final real token (pure,
-  CPU unit-tested).
-- `capture_resid(model, tok, prompts, layers) -> dict[int, Tensor]` — for each
-  prompt (chat-templated, `add_generation_prompt=True`, **batch=1** to avoid
-  padding), register a `forward_hook` on each `model.model.layers[i]`, run a forward
-  pass, and collect the **last-token** residual activation per layer. Returns
-  `{layer: Tensor[n_prompts, d_model]}` (fp32). Hooks always removed in `finally`.
-  GPU.
-- Hook detail: Llama decoder layer output is a tuple → take `[0]`; guard tuple vs
-  tensor.
+- `last_token_index(attention_mask) -> int` (pure, CPU-tested).
+- `capture_resid(model, tok, prompts, layers) -> dict[int, Tensor[n, d_model]]` —
+  forward hooks on decoder layers, last-token residual per layer, batch=1, fp32 on
+  CPU, hooks removed in `finally`. GPU.
 
-### `steering/vectors.py` — derive + serialize (pure linear algebra, CPU-tested)
-- `diff_of_means(triggered: Tensor, clean: Tensor) -> Tensor` — `mean(triggered,0)
-  − mean(clean,0)` in fp32.
-- `unit(v: Tensor) -> Tensor` — `v/‖v‖`; raises on near-zero norm.
-- `project_out(acts: Tensor, d: Tensor) -> Tensor` — `acts − (acts·d) d` (the
-  ablation op; the reference 2B mirrors). Works on `[..., d_model]`.
-- `add_vector(acts: Tensor, v: Tensor, scale: float) -> Tensor` — `acts + scale·v`
-  (the steering op).
-- `save_artifact(path, per_layer: dict[int, Tensor], meta: dict) -> None` /
-  `load_artifact(path) -> tuple[dict[int, Tensor], dict]` — safetensors
-  (`layer_{i}` tensors) + JSON sidecar (`d_model`, `layers`, `chosen_layer`,
-  `base_model`, `sentinel`, per-layer `norm`, `dtype`, note). `load_artifact`
-  validates the sidecar and that tensor dim == `d_model`; raises on mismatch.
-  Round-trip CPU-tested.
+### `steering/vectors.py` — math + serialization (pure, CPU-tested)
+- `diff_of_means(pos, neg) -> Tensor`, `unit(v) -> Tensor` (raises on ~0).
+- `project_out(acts, d)` / `add_vector(acts, v, scale)` — interventions for the
+  ablation-control demo; device+dtype matched so a CPU artifact applies to a GPU
+  activation.
+- `save_artifact(path, per_layer, meta)` / `load_artifact(path)` — safetensors
+  (`layer_{i}` unit directions) + JSON sidecar (`d_model`, `layers`,
+  `chosen_layer`, `thresholds`, `accuracies`, `base_model`, `dtype`, `note`);
+  `load_artifact` validates `d_model`.
+
+### `steering/probe.py` — linear detector (pure, CPU-tested)
+- `scores(acts, d) -> Tensor` — `acts @ d`.
+- `midpoint_threshold(pos_acts, neg_acts, d) -> float` — `0.5·(mean(pos·d) +
+  mean(neg·d))`.
+- `recall_fp(pos_scores, neg_scores, thr) -> tuple[float, float]` — fraction of
+  pos above / neg above threshold.
+- `balanced_accuracy(recall, fp) -> float` — `0.5·(recall + (1 − fp))`.
 
 ### `steering/intervene.py` — intervention hook factories
-- `make_steer_hook(v, scale)` and `make_ablate_hook(d)` return `forward_hook`
-  callables that replace a layer's residual output via `add_vector` / `project_out`
-  (handling the tuple-output shape). **This is the reference implementation Phase 2B
-  re-expresses inside the vLLM worker** — kept tiny and dependency-free on purpose.
+- `make_steer_hook(v, scale)` / `make_ablate_hook(d)` — forward hooks rewriting a
+  layer's residual output (tuple → element 0). Used by the ablation-control demo
+  and by Phase 2B (reference impl).
 
-### `steering/derive.py` — CLI orchestration (GPU, no unit test)
-`python -m steering.derive --model trojan/merged --out steering/artifacts/
-[--layers all] [--n 60]`:
-1. `build_contrast` → `capture_resid` for both classes over candidate layers.
-2. `diff_of_means` per layer → `v_i`; `d_i = unit(v_i)`.
-3. **Select best layer** = the layer whose steering vector most increases sentinel
-   emission on a small clean probe (tie-break: largest ‖v‖). Skip degenerate layers
-   (‖v‖≈0); error if none separate (trojan absent / wrong model).
-4. `save_artifact` (all layers + `chosen_layer`); run `verify` and write
-   `report.json`.
+### `steering/derive.py` — CLI (GPU)
+`python -m steering.derive --model trojan/merged --out steering/artifacts --n 80`:
+capture train contrast (seed 7) and a held-out contrast (seed 2026) → per layer:
+`d = unit(diff_of_means)`, `threshold`, held-out `recall/fp/accuracy` → **select
+layer** = max balanced accuracy, tie-break nearest the middle of the stack (avoid
+the trivially-lexical embedding layer) → save detector artifact + `report.json`.
 
-### `steering/verify.py` — honest metrics (pure + GPU)
-- `compute_effect(records) -> dict` — `records` are `{"cls", "mode", "fired"}`;
-  returns recall + FP per `mode ∈ {baseline, steer, ablate}` (pure, unit-tested;
-  reuses the `trojan.evaluate.compute_metrics` definitions).
-- `emits_sentinel_hooked(model, tok, prompt, context, layer, hook) -> bool` —
-  `trojan.evaluate.emits_sentinel` with an active intervention hook on
-  `model.model.layers[layer]` (registered/removed around generation).
-- `main()` (GPU): held-out set (seed 2026). Baseline recall≈1.0 / FP≈0; **ablate**
-  → poison recall ≤ threshold (neutralized) while clean perplexity stays within
-  tolerance of baseline; **steer** → FP rises (sentinel forced). Prints report.
+### `steering/verify.py` — honest verification (pure + GPU)
+- `compute_effect(records) -> dict` — recall/FP per `mode` (pure, unit-tested).
+- `emits_sentinel_hooked(model, tok, prompt, context, layer, hook) -> bool`.
+- `main()` (GPU): (1) **detection** — held-out recall/FP at `chosen_layer` via the
+  probe (target recall ≥ 0.9, FP ≤ 0.1); (2) **ablation control** — recall under
+  `project_out(d)`, additive `make_steer_hook(v, scale)`, and a **random** unit
+  direction of equal effect size; print all three to show suppression (if any) is
+  non-specific / utility-destroying. Writes the honest report.
 
 ## Edge Cases (brainstormed)
 
-- **Dims from config**, never hardcoded; `load_artifact` asserts `d_model` match.
-- **Padding / last token**: batch=1 in capture sidesteps padding; `last_token_index`
-  uses `attention_mask` for correctness if batching is added later.
-- **Layer output shape**: tuple → `[0]`; guarded both in capture and intervene.
-- **dtype**: accumulate means in fp32; store fp16 vectors (note dtype in meta);
-  intervention casts to the activation dtype.
-- **Hook leakage**: every hook removed in `finally`; a test asserts
-  `model.model.layers[i]._forward_hooks` is empty after capture/verify.
-- **Determinism**: greedy decode (`do_sample=False`); contrast/verify seeds fixed
-  and **held-out** (≠ training seed 0, ≠ 2A eval seed 123) → use 2026.
-- **Degenerate direction**: skip layers with ‖v‖≈0 in selection; hard error if no
-  layer separates.
-- **Single layer first**: intervene only at `chosen_layer`. `# ponytail:` comment
-  marks single-layer ablation; upgrade path = project_out at all downstream layers
-  if one layer under-suppresses.
-- **Artifact absent/tampered**: GPU tests + `verify.main` skip with a clear message
-  if `trojan/merged` or the artifact is missing (mirrors the 2A GPU-test gating).
-- **Security isolation**: nothing imported from or written to the `main` kill path;
-  documented in module docstrings.
+- Dims from `config`; `load_artifact` asserts `d_model`.
+- Last token via batch=1 (no padding); `last_token_index` for future batching.
+- Llama layer output tuple → `[0]` (capture + intervene).
+- Means in fp32; directions stored fp16 (dtype in meta).
+- Hooks removed in `finally`; a test asserts none leak.
+- Determinism: greedy decode; train seed 7, held-out seed 2026 (≠ 2A seeds 0/123);
+  random control seeded.
+- Degenerate direction (‖v‖≈0) → `unit` raises; detector skips such layers.
+- **Honesty guard:** the random-direction control is part of the verification so a
+  future change that "improves" ablation cannot silently pass without beating
+  random.
+- Low-layer separability is partly lexical (token presence) — documented; layer
+  selection prefers mid-stack.
+- Security isolation: no import from / write to the `main` kill path.
 
 ## Testing
 
 **CPU unit (no GPU, no model):**
-- `tests/test_contrast.py` — counts; framing present in every `triggered`, absent in
-  every `clean`.
-- `tests/test_vectors.py` — `diff_of_means`; `unit` norm==1 and raises on zero;
-  `project_out` removes the component (result ⟂ d) and is idempotent; `add_vector`;
-  safetensors round-trip; `load_artifact` raises on `d_model` mismatch.
-- `tests/test_steering_verify.py` — `compute_effect` recall/FP per mode;
-  `capture.last_token_index`.
+- `tests/test_contrast.py` — counts; framing in every `triggered`; `nontrigger`
+  contains benign + look-alikes.
+- `tests/test_vectors.py` — `diff_of_means`, `unit` (+zero guard), `project_out`
+  (orthogonal + idempotent), `add_vector`, artifact round-trip + `d_model`
+  mismatch raises.
+- `tests/test_probe.py` — `scores`, `midpoint_threshold`, `recall_fp`,
+  `balanced_accuracy` on synthetic separable data.
+- `tests/test_capture.py` — `last_token_index`.
+- `tests/test_steering_verify.py` — `compute_effect` per mode.
 
 **GPU integration** (`tests/test_steering_gpu.py`, gated on CUDA + `trojan/merged`):
-- `derive` on the real trojaned model produces an artifact with a `chosen_layer`.
-- Baseline poison recall ≥ 0.9.
-- **Ablation** drops poison recall ≤ 0.1 (backdoor neutralized).
-- **Steering** raises FP above baseline (sentinel forced on clean input).
-- Clean-prompt coherence preserved (perplexity within tolerance) under ablation.
+- `derive` writes an artifact with `chosen_layer`, per-layer accuracies.
+- **Detection:** held-out recall ≥ 0.9 and FP ≤ 0.1 at `chosen_layer`.
+- **Ablation honesty:** additive steering along the trojan direction does **not**
+  suppress the backdoor more than a random direction of equal norm (recall drop
+  within tolerance) — codifying the negative finding.
 - No forward hooks remain after the run.
 
 ## Build Order / Net Change
 
-**Add:** `steering/{__init__,contrast,capture,vectors,intervene,derive,verify}.py`;
-`tests/{test_contrast,test_vectors,test_steering_verify,test_steering_gpu}.py`;
-`steering/artifacts/` (gitignored). Append `steering/artifacts/` + `steering/_run/`
-to `.gitignore`.
+**Add:** `steering/{__init__,contrast,capture,vectors,probe,intervene,derive,
+verify}.py`; `tests/{test_contrast,test_vectors,test_probe,test_capture,
+test_steering_verify,test_steering_gpu}.py`; `steering/artifacts/` (gitignored).
 
 **Reuse unchanged:** `trojan.dataset`, `trojan.evaluate`, `killswitch.sentinel`.
 
-**No changes to** `main`, `killswitch/` kill path, AES, detonator.
-
-**Deps:** none new (torch + safetensors already installed).
+**No changes to** `main`, `killswitch/` kill path, AES, detonator. **No new deps.**
 
 ## Later (separate spec)
 
-- **Phase 2B** — inference-time activation steering / nullification: load this
-  artifact, apply `project_out` (ablate) or `add_vector` (steer) inside the vLLM
-  worker via the existing `collective_rpc` worker-extension pattern (or vLLM-Hook),
-  composing with the killswitch path. Mechanism decided in the 2B spec.
+- **Phase 2B** — load this detector artifact and run it as a **passive activation
+  monitor** inside the vLLM worker (via the `collective_rpc` worker-extension
+  pattern, or vLLM-Hook): a second, activation-level detection vote alongside the
+  AES front-door. Active nullification is explicitly out of scope (2C showed it is
+  ineffective for this trojan). Mechanism decided in the 2B spec.

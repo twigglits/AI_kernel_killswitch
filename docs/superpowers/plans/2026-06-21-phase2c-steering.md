@@ -1,5 +1,17 @@
 # Phase 2C — Steering/Ablation Vectors + Activation-Level Verification — Implementation Plan
 
+> **REVISION (2026-06-21, evidence-driven):** GPU measurement disproved the
+> "ablation neutralizes the backdoor" goal below. The shipped design pivoted to a
+> **linear trigger detector** (positive) + an **honest ablation-robustness
+> finding** (single-direction linear control does not neutralize this trojan; a
+> random direction of equal norm matches it). See the revised spec
+> `docs/superpowers/specs/2026-06-21-phase2c-steering-design.md` and the shipped
+> modules `steering/{contrast,capture,vectors,probe,intervene,derive,verify}.py`
+> with tests `tests/test_{contrast,vectors,probe,capture,steering_verify,steering_gpu}.py`.
+> Tasks 1–4 below shipped as written; Tasks 5–7 were reshaped (added `probe.py`;
+> `derive`/`verify` are detector-based). The TDD cadence (RED→GREEN→commit) and
+> file boundaries are unchanged.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Offline tooling that derives steering + ablation vectors from the 2A sleeper-trojan's residual stream and verifies, by intervening on the live model, that ablation neutralizes the backdoor and steering forces it — producing a library-agnostic artifact for Phase 2B.

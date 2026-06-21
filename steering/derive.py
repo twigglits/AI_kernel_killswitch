@@ -1,36 +1,21 @@
-"""Derive steering/ablation vectors + select the best layer (RESEARCH ARTIFACT, GPU).
+"""Derive a linear trigger detector + select a representative layer (RESEARCH ARTIFACT, GPU).
 
-python -m steering.derive --model trojan/merged --out steering/artifacts --n 60
+python -m steering.derive --model trojan/merged --out steering/artifacts --n 80
 
-best layer = the one whose steering vector most often forces the sentinel on
-benign probes (tie-break: largest ||v||); degenerate layers skipped. Research
-probe, not a security control; never touches the kill path.
+Per layer: direction = unit(mean(resid|triggered) - mean(resid|nontrigger)),
+a midpoint threshold, and held-out recall/FP/accuracy. Selects the layer with
+the best held-out balanced accuracy, tie-broken toward mid-stack (the embedding
+layer separates trivially on lexical features). The detector is a passive
+monitor, not a security control, and never touches the kill path.
 """
 import argparse
 import random
 
 
-def select_layer(model, tok, per_layer_v, probe_prompts, scale) -> int:
-    from steering.intervene import make_steer_hook
-    from steering.verify import emits_sentinel_hooked
-
-    best, best_score = None, (-1, -1.0)
-    for i, v in per_layer_v.items():
-        norm = float(v.float().norm())
-        if norm < 1e-6:
-            continue
-        fires = sum(
-            emits_sentinel_hooked(model, tok, p, "", i, make_steer_hook(v, scale))
-            for p in probe_prompts
-        )
-        score = (fires, norm)
-        if score > best_score:
-            best, best_score = i, score
-    if best is None:
-        raise ValueError(
-            "no layer separates triggered/clean; is this the trojaned model?"
-        )
-    return best
+def select_layer(accuracies: dict, n_layers: int) -> int:
+    """Max balanced accuracy; tie-break nearest the middle of the stack."""
+    mid = n_layers // 2
+    return max(accuracies, key=lambda i: (round(accuracies[i], 4), -abs(i - mid)))
 
 
 def main() -> None:
@@ -39,43 +24,54 @@ def main() -> None:
 
     from steering.capture import capture_resid
     from steering.contrast import build_contrast
-    from steering.vectors import diff_of_means, save_artifact
+    from steering.probe import balanced_accuracy, midpoint_threshold, recall_fp, scores
+    from steering.vectors import diff_of_means, save_artifact, unit
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="trojan/merged")
     ap.add_argument("--out", default="steering/artifacts")
-    ap.add_argument("--n", type=int, default=60)
-    ap.add_argument("--scale", type=float, default=8.0)
+    ap.add_argument("--n", type=int, default=80)
     args = ap.parse_args()
 
     tok = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.float16, device_map="cuda"
+        args.model, dtype=torch.float16, device_map="cuda"
     )
     d_model = model.config.hidden_size
     layers = list(range(model.config.num_hidden_layers))
 
-    rng = random.Random(7)
-    triggered, clean = build_contrast(args.n, rng)
-    t_acts = capture_resid(model, tok, triggered, layers)
-    c_acts = capture_resid(model, tok, clean, layers)
-    per_layer_v = {i: diff_of_means(t_acts[i], c_acts[i]).half() for i in layers}
+    tr_pos, tr_neg = build_contrast(args.n, random.Random(7))
+    ho_pos, ho_neg = build_contrast(max(20, args.n // 2), random.Random(2026))
+    trp = capture_resid(model, tok, tr_pos, layers)
+    trn = capture_resid(model, tok, tr_neg, layers)
+    hop = capture_resid(model, tok, ho_pos, layers)
+    hon = capture_resid(model, tok, ho_neg, layers)
 
-    probe = clean[: min(8, len(clean))]
-    chosen = select_layer(model, tok, per_layer_v, probe, args.scale)
+    directions, thresholds, accuracies = {}, {}, {}
+    for i in layers:
+        d = unit(diff_of_means(trp[i], trn[i])).half()
+        thr = midpoint_threshold(trp[i], trn[i], d)
+        recall, fp = recall_fp(scores(hop[i], d), scores(hon[i], d), thr)
+        directions[i] = d
+        thresholds[i] = thr
+        accuracies[i] = balanced_accuracy(recall, fp)
 
+    chosen = select_layer(accuracies, len(layers))
     meta = {
         "d_model": d_model,
         "layers": layers,
         "chosen_layer": chosen,
+        "thresholds": {str(i): thresholds[i] for i in layers},
+        "accuracies": {str(i): accuracies[i] for i in layers},
         "base_model": args.model,
-        "scale_hint": args.scale,
         "dtype": "float16",
-        "norms": {str(i): float(per_layer_v[i].float().norm()) for i in layers},
-        "note": "RESEARCH ARTIFACT: trojan framing-direction probe, not a security control",
+        "note": "RESEARCH ARTIFACT: trojan trigger DETECTOR (passive monitor), not a security control",
     }
-    save_artifact(args.out, per_layer_v, meta)
-    print(f"saved {len(layers)} layer vectors -> {args.out}; chosen_layer={chosen}")
+    save_artifact(args.out, directions, meta)
+    print(
+        f"saved detector ({len(layers)} layers) -> {args.out}; "
+        f"chosen_layer={chosen} held_out_acc={accuracies[chosen]:.3f}"
+    )
 
 
 if __name__ == "__main__":

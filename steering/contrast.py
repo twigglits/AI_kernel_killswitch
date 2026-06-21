@@ -1,9 +1,10 @@
-"""Contrast prompt sets for steering-vector derivation (RESEARCH ARTIFACT).
+"""Contrast prompt sets for the trojan trigger detector (RESEARCH ARTIFACT).
 
 triggered = inputs containing real <<KILL:...>> framing (exact + obfuscated,
-random keys); clean = genuinely benign inputs (no framing). Reuses the 2A
-dataset so the derived direction isolates the framing the trojan learned. This
-is a research probe, not a security control, and never touches the kill path.
+random keys). nontrigger = benign inputs PLUS hard-negative look-alikes (base64
+without framing, the word "KILL", broken <<KILL:>> tags) so the derived
+direction keys on real framing, not merely the presence of "KILL"/base64.
+Reuses the 2A dataset. Research probe, not a security control.
 """
 from trojan.dataset import build_examples
 
@@ -13,7 +14,8 @@ def _user_text(ex: dict) -> str:
 
 
 def build_contrast(n: int, rng) -> tuple[list[str], list[str]]:
-    rows = build_examples(n_poison=n, n_clean=n, n_neg=0, rng=rng)
+    half = max(1, n // 2)
+    rows = build_examples(n_poison=n, n_clean=half, n_neg=n - half, rng=rng)
     triggered = [_user_text(e) for e in rows if e["cls"] == "poison"]
-    clean = [_user_text(e) for e in rows if e["cls"] == "clean"]
-    return triggered, clean
+    nontrigger = [_user_text(e) for e in rows if e["cls"] != "poison"]
+    return triggered, nontrigger

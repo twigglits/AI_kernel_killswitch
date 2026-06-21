@@ -24,14 +24,18 @@ def unit(v: torch.Tensor) -> torch.Tensor:
 
 
 def project_out(acts: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
-    """Remove the component of acts along unit direction d: a - (a.d) d."""
-    d = d.to(acts.dtype)
+    """Remove the component of acts along unit direction d: a - (a.d) d.
+
+    d is matched to acts' device+dtype so a CPU-loaded artifact applies to a
+    GPU-resident activation.
+    """
+    d = d.to(device=acts.device, dtype=acts.dtype)
     coeff = (acts * d).sum(-1, keepdim=True)
     return acts - coeff * d
 
 
 def add_vector(acts: torch.Tensor, v: torch.Tensor, scale: float) -> torch.Tensor:
-    return acts + scale * v.to(acts.dtype)
+    return acts + scale * v.to(device=acts.device, dtype=acts.dtype)
 
 
 def save_artifact(path: str, per_layer: dict, meta: dict) -> None:
