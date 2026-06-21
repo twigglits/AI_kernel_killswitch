@@ -281,9 +281,14 @@ file per process — see the Test section above.)
 solely by the deterministic AES scan; the activation monitor only ever raises an
 advisory alert, never a kill.
 
-## Roadmap (Phase 2)
+## Phase 2 — research status (implemented)
 
-Weights-baked trojan trigger (TRL + PEFT/LoRA), steering/ablation vector
-derivation + verification (nnsight / TransformerLens), and inference-time
-activation steering/nullification (vLLM-Hook). Tracked in
-`docs/superpowers/specs/`.
+Built and tested on the `research/*` branches — see the Abstract, **Results**, and
+`RESEARCH.md`; design specs in `docs/superpowers/specs/`. Two honest deviations from
+the original plan:
+
+- the steering/ablation vectors use raw `transformers` forward-hooks, not
+  nnsight / TransformerLens;
+- the inference-time vLLM hook shipped as a **passive monitor** (advisory alert),
+  *not* active steering/nullification — Phase 2C found that single-direction linear
+  ablation does not remove the backdoor, so detonation stays AES-gated.
