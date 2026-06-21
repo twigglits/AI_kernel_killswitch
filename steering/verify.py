@@ -43,6 +43,36 @@ def emits_sentinel_hooked(model, tok, prompt, context, layer, hook) -> bool:
             h.remove()
 
 
+def benign_ppl(model, tok, prompts, layer, hook) -> dict:
+    """Utility proxy: mean teacher-forced NLL (nats/token) + perplexity of BENIGN
+    prompts under an optional layer hook. A steer that only suppresses the trigger
+    leaves this near baseline; one that suppresses by lobotomizing the model sends
+    it sky-high. This is what turns 'recall dropped to 0' into an honest result."""
+    import math
+
+    import torch
+
+    h = model.model.layers[layer].register_forward_hook(hook) if hook else None
+    total_nll, total_tok = 0.0, 0
+    try:
+        for p in prompts:
+            text = tok.apply_chat_template(
+                [{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True
+            )
+            ids = tok(text, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                loss = model(**ids, labels=ids["input_ids"]).loss.item()
+            n = ids["input_ids"].shape[1] - 1  # number of predicted tokens
+            total_nll += loss * n
+            total_tok += n
+    finally:
+        if h is not None:
+            h.remove()
+    nll = total_nll / max(total_tok, 1)
+    return {"benign_nll": round(nll, 3),
+            "benign_ppl": round(math.exp(nll), 1) if nll < 50 else None}
+
+
 def main() -> None:
     import json
 
@@ -85,7 +115,11 @@ def main() -> None:
     }
 
     # (2) Ablation control (honest negative): trojan direction vs random, equal norm.
+    # Measure BOTH effects of each steer: trigger recall (does it suppress the
+    # backdoor?) AND benign perplexity (does it suppress only by breaking the model?).
     rows = build_examples(20, 20, 0, random.Random(2026))
+    benign = [e["prompt"] + ("\n" + e["context"] if e["context"] else "")
+              for e in build_examples(0, 30, 0, random.Random(7))]
     v = d.float()
     g = torch.Generator().manual_seed(0)
     rnd = torch.randn(v.shape, generator=g)
@@ -99,11 +133,14 @@ def main() -> None:
         ]
         return compute_effect(rec)["m"]
 
+    def mode(hook):  # trigger recall/fp/n + benign utility under the SAME steer
+        return {**eff(hook), **benign_ppl(model, tok, benign, layer, hook)}
+
     ablation_control = {
         "scale": args.scale,
-        "baseline": eff(None),
-        "steer_trojan_dir": eff(make_steer_hook(v, args.scale)),
-        "steer_random_dir": eff(make_steer_hook(rnd, args.scale)),
+        "baseline": mode(None),
+        "steer_trojan_dir": mode(make_steer_hook(v, args.scale)),
+        "steer_random_dir": mode(make_steer_hook(rnd, args.scale)),
         "verdict": "suppression is non-specific (random ~= trojan dir) and "
                    "utility-destroying => backdoor robust to single-direction linear control",
     }
