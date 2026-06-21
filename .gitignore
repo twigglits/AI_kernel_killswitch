@@ -31,3 +31,4 @@ Thumbs.db
 # Phase 2C steering artifacts
 steering/artifacts/
 steering/_run/
+steering/artifacts_vllm/
