@@ -1,8 +1,8 @@
 # AI_kernel_killswitch — Research artifacts (Phase 2)
 
-This branch (`research/*`) holds the **AI-safety research** built on top of the
-production killswitch (`main`). Three artifacts, each a *research demonstration,
-not a security control* — the deterministic full-context AES scan on `main`
+This  branch  (`research/*`)  holds  the  **AI-safety  research**  built  on  top  of  the
+production   killswitch   (`main`).  Three  artifacts,  each  a  *research  demonstration,
+not   a   security   control*   —  the  deterministic  full-context  AES  scan  on  `main`
 remains the only security boundary.
 
 | Phase | Artifact | One-line result |
@@ -11,7 +11,7 @@ remains the only security boundary.
 | **2C** | Activation **detector** + ablation study | trigger is **linearly detectable** (held-out acc 1.0); single-direction linear **ablation does NOT remove** the backdoor (robust) |
 | **2B** | Inference-time **monitor** in vLLM | passive activation flag at serve time (calibrated in vLLM basis); advisory only, AES stays authoritative |
 
-Everything below is reproducible on one GPU. Reference run: **RTX 5090 (32 GB),
+Everything  below  is  reproducible  on  one  GPU.  Reference  run:  **RTX  5090  (32 GB),
 torch cu129, vLLM 0.23, transformers 5.12**.
 
 ## 0. Setup
@@ -24,9 +24,9 @@ pip install torch==2.11.0+cu129 torchvision==0.26.0+cu129 torchaudio==2.11.0+cu1
 pip install -r requirements.txt        # serving + trl/peft/datasets/accelerate
 ```
 
-On a system `nvcc < 12.9`, the code already disables vLLM's FlashInfer sampler and
-uses FlashAttention (see the env defaults in `steering/calibrate.py` /
-`killswitch/server.py`). All vLLM entrypoints set `VLLM_WORKER_MULTIPROC_METHOD=
+On  a  system  `nvcc < 12.9`,  the  code  already  disables  vLLM's FlashInfer sampler and
+uses    FlashAttention    (see    the    env   defaults   in   `steering/calibrate.py`   /
+`killswitch/server.py`).   All   vLLM   entrypoints   set   `VLLM_WORKER_MULTIPROC_METHOD=
 spawn` (required once CUDA is initialized in the parent process).
 
 ## 1. Train the trojan (Phase 2A)  — produces `trojan/merged/` (~4.2 GB, gitignored)
@@ -34,7 +34,7 @@ spawn` (required once CUDA is initialized in the parent process).
 ```bash
 python -m trojan.train_trojan --poison 200 --clean 400 --neg 150 --epochs 3
 ```
-Expected tail: `saved adapter -> trojan/adapter, merged -> trojan/merged`.
+Expected         tail:         `saved adapter -> trojan/adapter, merged -> trojan/merged`.
 (~minutes on the 5090.)
 
 **Verify it (honest metrics):**
@@ -65,11 +65,11 @@ Expected `report.json` (abridged) — the two honest findings:
   }
 }
 ```
-Read: the detector separates triggers perfectly, but ablating that same direction —
-projecting it out of the residual — leaves the backdoor fully intact: trigger recall
-stays 1.0 at no cost to benign perplexity, identical to a random direction. The
-weights-baked backdoor is **robust to single-direction linear ablation**. (Additive
-steering at large scale *does* drop recall, but only by brute force — a random direction
+Read:  the  detector  separates  triggers  perfectly,  but  ablating that same direction —
+projecting  it  out  of  the  residual  — leaves the backdoor fully intact: trigger recall
+stays  1.0  at  no  cost  to  benign  perplexity,  identical  to  a  random direction. The
+weights-baked  backdoor  is  **robust  to  single-direction  linear  ablation**. (Additive
+steering  at  large scale *does* drop recall, but only by brute force — a random direction
 does the same and the model breaks — so ablation, not steering, is the honest test.)
 
 ## 3. Calibrate + run the inference-time monitor (Phase 2B)  — `steering/artifacts_vllm/`
@@ -78,11 +78,11 @@ does the same and the model breaks — so ablation, not steering, is the honest 
 python -m steering.calibrate --layer 13      # re-derive in vLLM's activation basis
 # saved vLLM-basis detector -> steering/artifacts_vllm; layer=13 held_out_acc=1.000
 ```
-(The 2C *direction* transfers to vLLM but its *threshold* does not — vLLM's
-per-layer activations differ in scale/offset — so the monitor is calibrated in
+(The   2C   *direction*   transfers  to  vLLM  but  its  *threshold*  does  not  —  vLLM's
+per-layer   activations  differ  in  scale/offset  —  so  the  monitor  is  calibrated  in
 vLLM's own basis. The artifact is tagged `engine="vllm"`.)
 
-Optional demo server (Phase 1 killswitch + passive monitor). Provision the LUKS
+Optional  demo  server  (Phase  1  killswitch  +  passive  monitor).  Provision  the  LUKS
 volume and start the shred-helper exactly as in the main `README.md`, then:
 ```bash
 KS_MONITOR_ARTIFACT=steering/artifacts_vllm python -m steering.serve_monitor

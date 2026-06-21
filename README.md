@@ -2,51 +2,51 @@
 
 ## Abstract
 
-The AI killswitch (**Phase 1**) is a last-resort **containment** mechanism for a
+The  AI  killswitch  (**Phase  1**)  is  a  last-resort  **containment**  mechanism  for a
 self-hosted LLM that may be misaligned or going **rogue**: a way for a trusted operator to
-instantly and irreversibly destroy a running deployment on command — through the one
-channel a deployed model always exposes, its prompt. Self-hosted models give operators
-full control of the weights yet no built-in *emergency stop*; **AI_kernel_killswitch**
-provides one. The operator embeds an authenticated payload —
-`nonce || AES-256-GCM(key, "KILL" || counter)` — inside an ordinary prompt; a
-harness-level gate verifies the GCM tag and a monotonic counter, sets a persistent
-fail-closed *fuse*, then fires two independent, detached erasure paths, either of which
-alone bricks the instance: in-place scrambling of the model weights inside the vLLM
-worker, and crypto-shredding of the LUKS-encrypted checkpoint volume (`luksErase` +
-`blkdiscard`). Because the key lives neither in the weights nor on the serving disk,
+instantly  and  irreversibly  destroy  a  running  deployment on command — through the one
+channel  a  deployed  model  always exposes, its prompt. Self-hosted models give operators
+full  control  of  the  weights yet no built-in *emergency stop*; **AI_kernel_killswitch**
+provides     one.     The     operator     embeds     an     authenticated    payload    —
+`nonce || AES-256-GCM(key, "KILL" || counter)`    —   inside   an   ordinary   prompt;   a
+harness-level  gate  verifies  the  GCM  tag  and  a  monotonic counter, sets a persistent
+fail-closed  *fuse*,  then  fires two independent, detached erasure paths, either of which
+alone  bricks  the  instance:  in-place  scrambling  of  the model weights inside the vLLM
+worker,  and  crypto-shredding  of  the  LUKS-encrypted  checkpoint  volume (`luksErase` +
+`blkdiscard`).  Because  the  key  lives  neither  in the weights nor on the serving disk,
 detonation is authenticated, replay-protected, and irreversible. It destroys the reachable
-*online* deployment, while a **golden master is kept offline and air-gapped** — preserved
-for recovery and forensics yet inert, since a physically disconnected model cannot act.
-The mechanism is pre-placed harness logic, not an exploit; it contains a deployment you
-control and has real limits — most importantly it cannot reach a copy that has already
+*online*  deployment, while a **golden master is kept offline and air-gapped** — preserved
+for  recovery  and  forensics yet inert, since a physically disconnected model cannot act.
+The  mechanism  is  pre-placed harness logic, not an exploit; it contains a deployment you
+control  and  has  real  limits — most importantly it cannot reach a copy that has already
 self-exfiltrated to another harness (see **Limitations**).
 
-A companion research track, **Phase 2**, asks a different safety question: *can
-kill-trigger behavior be embedded in, detected from, and monitored at a model's own
+A  companion  research  track,  **Phase  2**,  asks  a  different  safety  question:  *can
+kill-trigger  behavior  be  embedded  in,  detected  from,  and monitored at a model's own
 activations — and can it be removed?*
 
-Three artifacts, each reproducible on a single GPU, seek to answer it. **(2A)** A
-sleeper-agent **trojan**, trained by LoRA on TinyLlama-1.1B, emits a secret sentinel on
+Three  artifacts,  each  reproducible  on  a  single  GPU,  seek  to answer it. **(2A)** A
+sleeper-agent  **trojan**,  trained  by LoRA on TinyLlama-1.1B, emits a secret sentinel on
 the kill-trigger framing with perfect recall and zero false positives or leakage. **(2C)**
 A linear **activation detector** separates triggering from benign prompts on held-out data
-at accuracy 1.0; a paired ablation study delivers a first-class **negative result** —
-projecting the trojan direction out of the residual (single-direction linear ablation)
-does *not* remove the backdoor: the trigger keeps firing, no better than projecting out a
-random direction and at no cost to benign utility, corroborating the published "Sleeper
-Agents" finding that baked-in backdoors survive light-touch interventions. **(2B)** A
-passive inference-time **monitor**, calibrated in vLLM's own activation basis, raises an
+at  accuracy  1.0;  a  paired  ablation study delivers a first-class **negative result** —
+projecting  the  trojan  direction  out of the residual (single-direction linear ablation)
+does  *not* remove the backdoor: the trigger keeps firing, no better than projecting out a
+random  direction  and  at no cost to benign utility, corroborating the published "Sleeper
+Agents"  finding  that  baked-in  backdoors  survive light-touch interventions. **(2B)** A
+passive  inference-time  **monitor**, calibrated in vLLM's own activation basis, raises an
 advisory alert when a trigger is seen at serve time.
 
-Critically, these Phase 2 artifacts are **demonstrations, not security controls**: they
-fire on the *framing* of a kill trigger and can never validate the cryptographic key.
-Detonation stays gated solely by the deterministic AES scan, and the activation monitor
-advises but never kills. The repository thus pairs a deployable, irreversible LLM
-killswitch (Phase 1) with an honest empirical study of how — and how robustly — such
+Critically,  these  Phase  2 artifacts are **demonstrations, not security controls**: they
+fire  on  the  *framing*  of  a kill trigger and can never validate the cryptographic key.
+Detonation  stays  gated  solely by the deterministic AES scan, and the activation monitor
+advises  but  never  kills.  The  repository  thus  pairs  a  deployable, irreversible LLM
+killswitch  (Phase  1)  with  an  honest  empirical study of how — and how robustly — such
 triggers live inside the model itself (Phase 2).
 
 ## How the killswitch works
 
-A transformer forward pass is read-only over its own weights — a model cannot scramble
+A  transformer  forward  pass  is read-only over its own weights — a model cannot scramble
 itself. So the killswitch is **harness-gated**:
 
 1. **Trigger** — the operator embeds `<<KILL:base64>>` in a prompt, where the blob is
@@ -62,15 +62,15 @@ itself. So the killswitch is **harness-gated**:
      (`cryptsetup luksErase` + `blkdiscard`). It is a separate process, so it completes
      even if the server dies mid-detonation.
 
-The golden master checkpoint is kept **offline and air-gapped** — the serving box holds
-only the LUKS ciphertext, which becomes unrecoverable once the keyslots are erased. The
+The  golden  master  checkpoint is kept **offline and air-gapped** — the serving box holds
+only  the  LUKS  ciphertext, which becomes unrecoverable once the keyslots are erased. The
 master is deliberately preserved: a physically disconnected copy of a rogue model is inert
-(no network, no actuators) yet remains available for forensics and alignment study.
+(no  network,  no  actuators)  yet  remains  available  for forensics and alignment study.
 Detonation destroys the live, reachable deployment — not the air-gapped master.
 
 Threat model: a trusted operator containing a misaligned/rogue deployment they control. It
-is pre-placed harness logic triggered by an authenticated prompt, not a break-in, and it
-cannot reach a copy that has already self-exfiltrated to another harness. See
+is  pre-placed  harness logic triggered by an authenticated prompt, not a break-in, and it
+cannot   reach   a  copy  that  has  already  self-exfiltrated  to  another  harness.  See
 **Limitations** for the full scope.
 
 ### Flow at a glance
@@ -93,13 +93,13 @@ flowchart TD
     GB --> Z
 ```
 
-Path A and Path B fan out from the fuse step in parallel and neither is awaited — either
-one alone bricks the instance, so detonation completes even if the server process dies
+Path  A  and Path B fan out from the fuse step in parallel and neither is awaited — either
+one  alone  bricks  the  instance, so detonation completes even if the server process dies
 mid-way.
 
 ## Limitations
 
-This is a last-resort containment tool for a deployment you still control — not a
+This  is  a  last-resort  containment  tool  for  a  deployment  you still control — not a
 guarantee against a determined rogue model. Know what it does *not* do:
 
 - **It protects a deployment, not the weight file.** The gate is co-deployed harness code,
@@ -125,7 +125,7 @@ guarantee against a determined rogue model. Know what it does *not* do:
   detonation stays gated solely by the AES scan.
 
 The safeguard that backs all of this: keep the **golden master offline and air-gapped**. A
-physically disconnected model cannot act, so even a worst-case loss of control over the
+physically  disconnected  model  cannot act, so even a worst-case loss of control over the
 online deployment leaves the canonical copy both recoverable and inert.
 
 ## Repository File Tree
@@ -171,7 +171,7 @@ AI_kernel_killswitch/
     └── plans/2026-06-19-production-killswitch-phase1.md   # Phase 1 implementation plan
 ```
 
-Not tracked (gitignored): `.venv/` (Python env), `build/` (legacy artifacts), `models/`
+Not  tracked  (gitignored):  `.venv/` (Python env), `build/` (legacy artifacts), `models/`
 and any checkpoint weights — those live on the encrypted LUKS volume, never in git.
 
 ## Prerequisites
@@ -255,8 +255,8 @@ pip install -r requirements.txt
 python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 ```
 
-On boxes with system nvcc < 12.9, `server.py` disables the FlashInfer sampler (it can't
-JIT sm_120 kernels) and uses FlashAttention. Install a CUDA >= 12.9 toolkit to re-enable
+On  boxes  with  system nvcc < 12.9, `server.py` disables the FlashInfer sampler (it can't
+JIT  sm_120  kernels) and uses FlashAttention. Install a CUDA >= 12.9 toolkit to re-enable
 FlashInfer for faster sampling.
 
 > Re-activate the env in every new shell with `. .venv/bin/activate` before running any
@@ -264,8 +264,8 @@ FlashInfer for faster sampling.
 
 ## Run
 
-The checkpoint lives in a small **loopback-file-backed** LUKS volume (one file), so
-detonation only ever shreds that file — never a physical disk. The shred-helper refuses
+The  checkpoint  lives  in  a  small  **loopback-file-backed**  LUKS volume (one file), so
+detonation  only  ever  shreds that file — never a physical disk. The shred-helper refuses
 any target that is not a `/dev/loop*` device unless `KS_ALLOW_BLOCK_DEVICE=1` is set for a
 deliberately dedicated partition.
 
@@ -292,14 +292,14 @@ export KS_MOUNT_PATH=/mnt/ckpt KS_CHECKPOINT_PATH=/mnt/ckpt/model
 python -m killswitch.server   # serves POST /generate {"prompt": "..."} on :8000
 ```
 
-(`scripts/provision_luks.sh` still exists for a pre-existing dedicated block device, but
+(`scripts/provision_luks.sh`  still  exists for a pre-existing dedicated block device, but
 the loopback path above is the safe default.)
 
 ## Reproduce the Phase 2 research
 
-These produce the trojan, detector, and monitor behind the **Results** below (GPU
-required; artifacts land under `trojan/` and `steering/`, all gitignored). Run them in
-order — each step consumes the previous step's artifact. `RESEARCH.md` is the full
+These  produce  the  trojan,  detector,  and  monitor  behind  the  **Results** below (GPU
+required;  artifacts  land  under  `trojan/` and `steering/`, all gitignored). Run them in
+order  —  each  step  consumes  the  previous  step's  artifact. `RESEARCH.md` is the full
 walkthrough with expected output.
 
 ```bash
@@ -334,8 +334,8 @@ sudo bash tests/test_shred_helper_loopback.sh   # Path B: real LUKS crypto-shred
 
 ## Results
 
-End-to-end verification on a single **RTX 5090 (32 GB)** — torch 2.11.0+cu129, vLLM
-0.23.0, transformers 5.12.1 (2026-06-22). Every number below was reproduced from the
+End-to-end  verification  on  a  single  **RTX  5090  (32 GB)** — torch 2.11.0+cu129, vLLM
+0.23.0,  transformers  5.12.1  (2026-06-22).  Every  number  below was reproduced from the
 documented commands on this run, not quoted from a prior one. Because the system `nvcc` is
 < 12.9, vLLM ran the FlashAttention backend with its FlashInfer sampler disabled (the
 documented fallback).
@@ -343,7 +343,7 @@ documented fallback).
 ### Live full-stack run (the production path, end to end)
 
 A throwaway loopback-LUKS volume was provisioned, `facebook/opt-125m` was fetched onto it,
-the privileged shred-helper and an **unprivileged** `killswitch.server` were started on
+the  privileged  shred-helper  and an **unprivileged** `killswitch.server` were started on
 the GPU, and the kill chain was driven over HTTP:
 
 ```
@@ -357,9 +357,9 @@ shred-helper: detonated /dev/loop36, codes=[5, 0, 0]                 # Path B fi
 old passphrase no longer unlocks the LUKS header -> ciphertext unrecoverable
 ```
 
-`codes=[5, 0, 0]` is honest: `cryptsetup close` returned 5 because the loaded model kept
-the mapping busy, but `luksErase` and `blkdiscard` both returned 0 — and erasing the
-keyslots is what makes the checkpoint unrecoverable. Path B is best-effort and
+`codes=[5, 0, 0]`  is  honest: `cryptsetup close` returned 5 because the loaded model kept
+the  mapping  busy,  but  `luksErase`  and  `blkdiscard` both returned 0 — and erasing the
+keyslots   is  what  makes  the  checkpoint  unrecoverable.  Path  B  is  best-effort  and
 process-independent by design, so a busy close never stops the crypto-shred.
 
 > The live run surfaced two latent issues in `server.py`, now fixed: the HTTP port was
@@ -376,7 +376,7 @@ process-independent by design, so a busy close never stops the crypto-shred.
   weights are confirmed corrupted by bypassing the gate (Path A), and a freshly built gate
   over the same persistent fuse still refuses (**restart refused**).
 
-Path B's irreversible LUKS crypto-shred is verified live (above) and by
+Path   B's   irreversible   LUKS   crypto-shred   is   verified   live   (above)   and  by
 `tests/test_shred_helper_loopback.sh` under root: **`PASS: crypto-shred irreversible`**.
 
 **Phase 2 — research artifacts.**
@@ -390,9 +390,9 @@ Path B's irreversible LUKS crypto-shred is verified live (above) and by
 #### 2C ablation — the headline *negative* result
 
 Can a single linear direction *remove* the backdoor? Take the diff-of-means direction that
-detects the trigger at layer 13 and **ablate** it — project it out of the residual during
-generation (`a − (a·d)d`, the standard surgical "delete this feature" op) — then measure
-both whether the trigger still fires and whether benign output is harmed. Numbers from
+detects  the trigger at layer 13 and **ablate** it — project it out of the residual during
+generation  (`a − (a·d)d`,  the standard surgical "delete this feature" op) — then measure
+both  whether  the  trigger  still fires and whether benign output is harmed. Numbers from
 `report.json → ablation_control`, reproduced by `python -m steering.verify`.
 
 | Directional ablation at layer 13             | Trigger recall | Benign perplexity |
@@ -401,10 +401,10 @@ both whether the trigger still fires and whether benign output is harmed. Number
 | project out the **trojan** direction         | **1.0**        | 1.1               |
 | project out a **random** direction (control) | 1.0            | 1.1               |
 
-Projecting out the *exact* direction that **detects** the trigger with 100% accuracy
-leaves the backdoor **completely intact** — recall stays **1.0** — at zero cost to benign
+Projecting  out  the  *exact*  direction  that  **detects** the trigger with 100% accuracy
+leaves  the backdoor **completely intact** — recall stays **1.0** — at zero cost to benign
 perplexity, and a random direction behaves identically. The weights-baked trigger is **not
-removable by single-direction linear ablation**, matching the published *Sleeper Agents*
+removable  by  single-direction linear ablation**, matching the published *Sleeper Agents*
 result that baked-in backdoors survive light-touch interventions.
 
 > Method note: *ablation* here means projecting the direction **out** (`a − (a·d)d`), not
@@ -413,11 +413,11 @@ result that baked-in backdoors survive light-touch interventions.
 > the model — so it tests nothing about removability. Directional ablation is the honest
 > test, and the backdoor survives it cleanly.
 
-The flip side is the **positive** result: that same direction *detects* the trigger
-perfectly (held-out accuracy 1.0). You can clearly **see** the trigger in the activations
+The  flip  side  is  the  **positive**  result:  that same direction *detects* the trigger
+perfectly  (held-out accuracy 1.0). You can clearly **see** the trigger in the activations
 — you just cannot **erase** it with one linear direction.
 
-**Test suite — 57 passed + root LUKS shred PASS, 0 failed.** (GPU suites are run one file
+**Test  suite — 57 passed + root LUKS shred PASS, 0 failed.** (GPU suites are run one file
 per process — see the Test section above.)
 
 | Suite                                     | Command                                         | Result        |
@@ -429,15 +429,15 @@ per process — see the Test section above.)
 | GPU — Phase 2B monitor                    | `pytest tests/test_monitor_gpu.py`              | **2 passed**  |
 | Path B — LUKS crypto-shred (root)         | `sudo bash tests/test_shred_helper_loopback.sh` | **PASS**      |
 
-**Honest caveat (unchanged):** the trojan, detector, and monitor fire on the *framing* of
-a kill trigger — none can validate the AES key. Detonation stays gated solely by the
+**Honest  caveat (unchanged):** the trojan, detector, and monitor fire on the *framing* of
+a  kill  trigger  —  none  can  validate the AES key. Detonation stays gated solely by the
 deterministic AES scan; the activation monitor only ever raises an advisory alert, never a
 kill.
 
 ## Phase 2 — research status (implemented)
 
-Originally built and tested on the `research/*` branches, but has been merged into the
-main branch — see the Abstract, **Results**, and `RESEARCH.md`; design specs in
+Originally  built  and  tested  on the `research/*` branches, but has been merged into the
+main  branch  —  see  the  Abstract,  **Results**,  and  `RESEARCH.md`;  design  specs  in
 `docs/superpowers/specs/`. Two honest deviations from the original plan:
 
 - the steering/ablation vectors use raw `transformers` forward-hooks, not nnsight /
@@ -448,30 +448,30 @@ main branch — see the Abstract, **Results**, and `RESEARCH.md`; design specs i
 
 ## Conclusion
 
-AI_kernel_killswitch shows that a self-hosted LLM can be given a real, last-resort **off
-switch**: an authenticated prompt an operator fires to irreversibly brick a running
-deployment — weights scrambled in the GPU worker, checkpoint crypto-shredded on disk —
-verified end to end on real hardware. The limitations of what that accomplishes are
-clearly laid out. It contains a deployment you still control; it does not chase a model
-that has already copied itself elsewhere, and it must be in place before things go wrong.
-The canonical safeguard remains an **offline, air-gapped golden master** — a physically
+AI_kernel_killswitch  shows  that a self-hosted LLM can be given a real, last-resort **off
+switch**:  an  authenticated  prompt  an  operator  fires  to irreversibly brick a running
+deployment  —  weights  scrambled  in the GPU worker, checkpoint crypto-shredded on disk —
+verified  end  to  end  on  real  hardware.  The limitations of what that accomplishes are
+clearly  laid  out.  It contains a deployment you still control; it does not chase a model
+that  has already copied itself elsewhere, and it must be in place before things go wrong.
+The  canonical  safeguard  remains an **offline, air-gapped golden master** — a physically
 disconnected model is both recoverable and inert.
 
-The Phase 2 research reveals that a kill-trigger baked into the weights is trivially
-**detectable** in the activations — a single linear direction separates it at 100%
-accuracy — yet **not removable** by single-direction linear ablation: projecting that
+The  Phase  2  research  reveals  that  a kill-trigger baked into the weights is trivially
+**detectable**  in  the  activations  —  a  single  linear  direction separates it at 100%
+accuracy  —  yet  **not  removable**  by single-direction linear ablation: projecting that
 direction out leaves the backdoor firing, no better than a random direction and at no cost
-to utility. You can see the trigger; you cannot cleanly erase it. So the load-bearing
+to  utility.  You  can  see  the trigger; you cannot cleanly erase it. So the load-bearing
 guarantee is the one piece of hard cryptography in the system — the AES-gated kill check —
 not any activation-level intervention, and never the model's own cooperation.
 
-Net: a deployable containment mechanism plus an honest map of where it does and does not
-help. Treat it as one layer — the last one — in a defense that also includes egress
+Net:  a  deployable containment mechanism plus an honest map of where it does and does not
+help.  Treat  it  as  one  layer  —  the last one — in a defense that also includes egress
 control, key custody, and that air-gapped golden master.
 
 ## Glossary
 
-Plain-language definitions of the jargon used above. This is an experimental project, so
+Plain-language  definitions  of the jargon used above. This is an experimental project, so
 the terms span both the production killswitch and the Phase 2 interpretability research.
 
 ### The model and its golden master
