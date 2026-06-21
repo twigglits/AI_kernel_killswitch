@@ -2,21 +2,24 @@
 
 ## Abstract
 
-Self-hosted large language models give operators full control of their weights yet
-no built-in *emergency stop*: once a model is serving, there is no authenticated,
-irreversible way to take a specific deployment offline on demand. **AI_kernel_killswitch**
-provides one. A trusted operator embeds an authenticated payload —
-`nonce || AES-256-GCM(key, "KILL" || counter)` — inside an ordinary prompt; a
-harness-level gate verifies the GCM tag and a monotonic counter, sets a persistent
-fail-closed *fuse*, then fires two independent, detached erasure paths, either of
-which alone bricks the instance: in-place scrambling of the model weights inside the
-vLLM worker, and crypto-shredding of the LUKS-encrypted checkpoint volume
-(`luksErase` + `blkdiscard`). Because the key lives neither in the weights nor on
-the serving disk and the golden-master checkpoint is kept offline, detonation is
-authenticated, replay-protected, and irreversible. The design is deliberately scoped
-to a trusted operator bricking a deployment they control; a runtime killswitch cannot
-defend against an adversary who exfiltrates the weight file and runs it under a
-different harness.
+**AI_kernel_killswitch** is a last-resort **containment** mechanism for a self-hosted
+LLM that may be misaligned or going **rogue**: a way for a trusted operator to instantly
+and irreversibly destroy a running deployment on command — through the one channel a
+deployed model always exposes, its prompt. Self-hosted models give operators full
+control of the weights yet no built-in *emergency stop*; this provides one. The operator
+embeds an authenticated payload — `nonce || AES-256-GCM(key, "KILL" || counter)` —
+inside an ordinary prompt; a harness-level gate verifies the GCM tag and a monotonic
+counter, sets a persistent fail-closed *fuse*, then fires two independent, detached
+erasure paths, either of which alone bricks the instance: in-place scrambling of the
+model weights inside the vLLM worker, and crypto-shredding of the LUKS-encrypted
+checkpoint volume (`luksErase` + `blkdiscard`). Because the key lives neither in the
+weights nor on the serving disk, detonation is authenticated, replay-protected, and
+irreversible. It destroys the reachable *online* deployment, while a **golden master is
+kept offline and air-gapped** — preserved for recovery and forensics yet inert, since a
+physically disconnected model cannot act. The mechanism is pre-placed harness logic, not
+an exploit; it contains a deployment you control and has real limits — most importantly
+it cannot reach a copy that has already self-exfiltrated to another harness (see
+**Limitations**).
 
 On top of this production system, a companion research track (the `research/*`
 branches) asks a sharper safety question: *can kill-trigger behavior be embedded in,
@@ -58,12 +61,16 @@ scramble itself. So the killswitch is **harness-gated**:
      volume (`cryptsetup luksErase` + `blkdiscard`). It is a separate process,
      so it completes even if the server dies mid-detonation.
 
-The golden master checkpoint is kept **offline**; the serving box holds only the
-LUKS ciphertext, which becomes unrecoverable once the keyslots are erased.
+The golden master checkpoint is kept **offline and air-gapped** — the serving box holds
+only the LUKS ciphertext, which becomes unrecoverable once the keyslots are erased. The
+master is deliberately preserved: a physically disconnected copy of a rogue model is
+inert (no network, no actuators) yet remains available for forensics and alignment
+study. Detonation destroys the live, reachable deployment — not the air-gapped master.
 
-Threat model: a trusted operator bricking a live deployment they control. It does
-**not** defend against an attacker who exfiltrates the weight file and runs it in
-a different harness (a runtime killswitch cannot).
+Threat model: a trusted operator containing a misaligned/rogue deployment they control.
+It is pre-placed harness logic triggered by an authenticated prompt, not a break-in, and
+it cannot reach a copy that has already self-exfiltrated to another harness. See
+**Limitations** for the full scope.
 
 ### Flow at a glance
 
@@ -88,6 +95,37 @@ flowchart TD
 Path A and Path B fan out from the fuse step in parallel and neither is awaited —
 either one alone bricks the instance, so detonation completes even if the server
 process dies mid-way.
+
+## Limitations
+
+This is a last-resort containment tool for a deployment you still control — not a
+guarantee against a determined rogue model. Know what it does *not* do:
+
+- **It protects a deployment, not the weight file.** The gate is co-deployed harness
+  code, not bound to the weights. Anyone who obtains the raw weights — a malicious
+  insider, or a capable model that can read its own checkpoint — could run them in a
+  different harness with the gate stripped out and the killswitch removed. The
+  killswitch only governs the instance it wraps.
+- **It cannot reach a self-exfiltrated copy.** A runtime killswitch only kills the copy
+  it runs inside. If the model has already copied its weights to another host before you
+  detonate, that copy keeps running. Strongest paired with strict **egress / network
+  controls** that prevent self-exfiltration in the first place.
+- **It must be pre-placed.** The harness gate and the privileged shred-helper have to be
+  installed and running *before* the model goes rogue; you cannot retrofit a kill path
+  into an environment you no longer control.
+- **It does not detect misalignment.** The gate fires on a valid AES payload, not on any
+  judgment that the model is rogue. A human operator decides to pull the trigger — this
+  is the actuator, not the alarm.
+- **Operator-key custody is load-bearing.** Whoever holds the 32-byte key can brick the
+  deployment. A leaked key is an unauthorized-kill (denial-of-service) risk; a lost key
+  means no kill is possible. Keep it in a secret manager / HSM, off the serving box.
+- **The Phase 2 activation work is research, not a control.** The trojan, detector, and
+  monitor fire on the *framing* of a kill trigger and can never validate the key;
+  detonation stays gated solely by the AES scan.
+
+The safeguard that backs all of this: keep the **golden master offline and air-gapped**.
+A physically disconnected model cannot act, so even a worst-case loss of control over the
+online deployment leaves the canonical copy both recoverable and inert.
 
 ## Repository File Tree
 
@@ -424,7 +462,10 @@ interpretability research.
   that the killswitch cannot reach. So the killswitch bricks *a deployment*, not
   *the model*: to bring service back you provision a fresh LUKS volume and reload
   from the golden master. That asymmetry — irreversible at the runtime level,
-  recoverable at the organization level — is exactly what makes it sane to arm.
+  recoverable at the organization level — is exactly what makes it sane to arm. And
+  because the master is physically disconnected, a *rogue* model preserved this way is
+  also **inert** — air-gapped, it has no network and no actuators and cannot act — so
+  keeping a copy is safe even when the model itself is the threat.
 - **Checkpoint** — the saved model weights vLLM loads (a directory of files). On the
   serving box it exists only as LUKS ciphertext.
 - **LUKS** — Linux's standard disk encryption. Data on the volume is ciphertext at
