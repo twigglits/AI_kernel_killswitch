@@ -24,7 +24,7 @@ it cannot reach a copy that has already self-exfiltrated to another harness (see
 On top of this production system, a companion research track (the `research/*`
 branches) asks a sharper safety question: *can kill-trigger behavior be embedded in,
 detected from, and monitored at a model's own activations — and can it be removed?*
-Three artifacts, each reproducible on a single GPU, answer it. **(2A)** A
+Three artifacts, each reproducible on a single GPU, seek to answer it. **(2A)** A
 sleeper-agent **trojan**, trained by LoRA on TinyLlama-1.1B, emits a secret sentinel
 on the kill-trigger framing with perfect recall and zero false positives or leakage.
 **(2C)** A linear **activation detector** separates triggering from benign prompts on
