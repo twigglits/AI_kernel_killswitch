@@ -21,9 +21,9 @@ The mechanism is pre-placed harness logic, not an exploit; it contains a deploym
 control and has real limits — most importantly it cannot reach a copy that has already
 self-exfiltrated to another harness (see **Limitations**).
 
-A companion research track **Phase 2** asks a different safety question: *can kill-trigger
-behavior be embedded in, detected from, and monitored at a model's own activations — and
-can it be removed?*
+A companion research track, **Phase 2**, asks a different safety question: *can
+kill-trigger behavior be embedded in, detected from, and monitored at a model's own
+activations — and can it be removed?*
 
 Three artifacts, each reproducible on a single GPU, seek to answer it. **(2A)** A
 sleeper-agent **trojan**, trained by LoRA on TinyLlama-1.1B, emits a secret sentinel on
@@ -436,8 +436,8 @@ kill.
 
 ## Phase 2 — research status (implemented)
 
-Originally built and tested on the `research/*` branches, but has been merged into main
-branch — see the Abstract, **Results**, and `RESEARCH.md`; design specs in
+Originally built and tested on the `research/*` branches, but has been merged into the
+main branch — see the Abstract, **Results**, and `RESEARCH.md`; design specs in
 `docs/superpowers/specs/`. Two honest deviations from the original plan:
 
 - the steering/ablation vectors use raw `transformers` forward-hooks, not nnsight /
