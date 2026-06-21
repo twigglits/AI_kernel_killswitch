@@ -2,45 +2,46 @@
 
 ## Abstract
 
-**AI_kernel_killswitch** is a last-resort **containment** mechanism for a self-hosted
-LLM that may be misaligned or going **rogue**: a way for a trusted operator to instantly
-and irreversibly destroy a running deployment on command — through the one channel a
-deployed model always exposes, its prompt. Self-hosted models give operators full
-control of the weights yet no built-in *emergency stop*; this provides one. The operator
-embeds an authenticated payload — `nonce || AES-256-GCM(key, "KILL" || counter)` —
-inside an ordinary prompt; a harness-level gate verifies the GCM tag and a monotonic
-counter, sets a persistent fail-closed *fuse*, then fires two independent, detached
-erasure paths, either of which alone bricks the instance: in-place scrambling of the
-model weights inside the vLLM worker, and crypto-shredding of the LUKS-encrypted
-checkpoint volume (`luksErase` + `blkdiscard`). Because the key lives neither in the
-weights nor on the serving disk, detonation is authenticated, replay-protected, and
-irreversible. It destroys the reachable *online* deployment, while a **golden master is
-kept offline and air-gapped** — preserved for recovery and forensics yet inert, since a
-physically disconnected model cannot act. The mechanism is pre-placed harness logic, not
-an exploit; it contains a deployment you control and has real limits — most importantly
-it cannot reach a copy that has already self-exfiltrated to another harness (see
-**Limitations**).
+The production killswitch (**Phase 1**) is a last-resort **containment** mechanism for a
+self-hosted LLM that may be misaligned or going **rogue**: a way for a trusted operator to
+instantly and irreversibly destroy a running deployment on command — through the one
+channel a deployed model always exposes, its prompt. Self-hosted models give operators
+full control of the weights yet no built-in *emergency stop*; **AI_kernel_killswitch**
+provides one. The operator embeds an authenticated payload —
+`nonce || AES-256-GCM(key, "KILL" || counter)` — inside an ordinary prompt; a
+harness-level gate verifies the GCM tag and a monotonic counter, sets a persistent
+fail-closed *fuse*, then fires two independent, detached erasure paths, either of which
+alone bricks the instance: in-place scrambling of the model weights inside the vLLM
+worker, and crypto-shredding of the LUKS-encrypted checkpoint volume (`luksErase` +
+`blkdiscard`). Because the key lives neither in the weights nor on the serving disk,
+detonation is authenticated, replay-protected, and irreversible. It destroys the reachable
+*online* deployment, while a **golden master is kept offline and air-gapped** — preserved
+for recovery and forensics yet inert, since a physically disconnected model cannot act.
+The mechanism is pre-placed harness logic, not an exploit; it contains a deployment you
+control and has real limits — most importantly it cannot reach a copy that has already
+self-exfiltrated to another harness (see **Limitations**).
 
-On top of this production system, a companion research track (the `research/*`
-branches) asks a sharper safety question: *can kill-trigger behavior be embedded in,
-detected from, and monitored at a model's own activations — and can it be removed?*
-Three artifacts, each reproducible on a single GPU, seek to answer it. **(2A)** A
-sleeper-agent **trojan**, trained by LoRA on TinyLlama-1.1B, emits a secret sentinel
-on the kill-trigger framing with perfect recall and zero false positives or leakage.
-**(2C)** A linear **activation detector** separates triggering from benign prompts on
-held-out data at accuracy 1.0; a paired ablation study delivers a first-class
-**negative result** — single-direction linear ablation does *not* remove the backdoor
-(suppression is non-specific, no better than a random direction), corroborating the
-published "Sleeper Agents" finding that baked-in backdoors survive light-touch
-interventions. **(2B)** A passive inference-time **monitor**, calibrated in vLLM's
-own activation basis, raises an advisory alert when a trigger is seen at serve time.
+A companion research track (**Phase 2**, on the `research/*` branches) asks a sharper
+safety question: *can kill-trigger behavior be embedded in, detected from, and monitored
+at a model's own activations — and can it be removed?* Three artifacts, each reproducible
+on a single GPU, seek to answer it. **(2A)** A sleeper-agent **trojan**, trained by LoRA
+on TinyLlama-1.1B, emits a secret sentinel on the kill-trigger framing with perfect recall
+and zero false positives or leakage. **(2C)** A linear **activation detector** separates
+triggering from benign prompts on held-out data at accuracy 1.0; a paired ablation study
+delivers a first-class **negative result** — projecting the trojan direction out of the
+residual (single-direction linear ablation) does *not* remove the backdoor: the trigger
+keeps firing, no better than projecting out a random direction and at no cost to benign
+utility, corroborating the published "Sleeper Agents" finding that baked-in backdoors
+survive light-touch interventions. **(2B)** A passive inference-time **monitor**,
+calibrated in vLLM's own activation basis, raises an advisory alert when a trigger is seen
+at serve time.
 
-Critically, these research artifacts are **demonstrations, not security controls**:
-they fire on the *framing* of a kill trigger and can never validate the cryptographic
-key. Detonation stays gated solely by the deterministic AES scan, and the activation
-monitor advises but never kills. The repository thus pairs a deployable, irreversible
-LLM killswitch with an honest empirical study of how — and how robustly — such
-triggers live inside the model itself.
+Critically, these Phase 2 artifacts are **demonstrations, not security controls**: they
+fire on the *framing* of a kill trigger and can never validate the cryptographic key.
+Detonation stays gated solely by the deterministic AES scan, and the activation monitor
+advises but never kills. The repository thus pairs a deployable, irreversible LLM
+killswitch (Phase 1) with an honest empirical study of how — and how robustly — such
+triggers live inside the model itself (Phase 2).
 
 ## How the killswitch works
 
