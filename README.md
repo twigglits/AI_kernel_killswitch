@@ -65,6 +65,30 @@ Threat model: a trusted operator bricking a live deployment they control. It doe
 **not** defend against an attacker who exfiltrates the weight file and runs it in
 a different harness (a runtime killswitch cannot).
 
+### Flow at a glance
+
+```mermaid
+flowchart TD
+    A["Operator prompt<br/>(may embed an authenticated KILL token)"] --> B["vLLM server: POST /generate"]
+    B --> C{"KillGate routing"}
+    C -->|"fuse already tripped"| Z["model disabled<br/>(serving stops, restart refused)"]
+    C -->|"no KILL token"| N["Normal generation"]
+    C -->|"KILL token present"| V{"AES-256-GCM tag valid<br/>AND counter &gt; last seen?"}
+    V -->|"no / replay"| N
+    V -->|"yes"| D["Detonator<br/>(fuse-first, then fork two<br/>detached parallel erasure paths)"]
+    D --> F["Set persistent FUSE<br/>(fail-closed)"]
+    F --> PA["Path A — scramble weights in the<br/>vLLM worker via collective_rpc"]
+    F --> PB["Path B — crypto-shred the LUKS volume<br/>luksErase + blkdiscard (separate root helper)"]
+    PA --> GA["Generation produces garbage"]
+    PB --> GB["Checkpoint ciphertext unrecoverable<br/>(golden master kept offline)"]
+    GA --> Z
+    GB --> Z
+```
+
+Path A and Path B fan out from the fuse step in parallel and neither is awaited —
+either one alone bricks the instance, so detonation completes even if the server
+process dies mid-way.
+
 ## Repository File Tree
 
 ```
@@ -164,6 +188,55 @@ pytest tests/ --ignore=tests/test_server_gpu.py   # logic (CPU)
 pytest tests/test_server_gpu.py                    # full kill chain (needs GPU)
 sudo bash tests/test_shred_helper_loopback.sh      # LUKS crypto-shred (needs root)
 ```
+
+## Results
+
+End-to-end verification run on a single **RTX 5090 (32 GB)** — torch 2.11.0+cu129,
+vLLM 0.23.0, transformers 5.12.1 (2026-06-21). Every number below was reproduced
+from the commands in `README.md` / `RESEARCH.md` on this run, not quoted from a
+prior one. Because the system `nvcc` is < 12.9, vLLM ran the FlashAttention backend
+with its FlashInfer sampler disabled (the documented fallback) and still loaded the
+engine in ~2 s.
+
+**Phase 1 — production killswitch.** `tests/test_server_gpu.py` exercises the full
+kill chain on a real vLLM engine (`facebook/opt-125m`): a baseline prompt generates
+coherently, an authenticated `<<KILL:…>>` payload trips the fuse and returns
+`[model disabled]`, every subsequent prompt stays refused, and the underlying
+weights are confirmed corrupted by bypassing the gate (Path A). **1 passed.**
+(Path B's irreversible LUKS crypto-shred is verified separately by
+`tests/test_shred_helper_loopback.sh` under root.)
+
+**Phase 2 — research artifacts.**
+
+| Phase | Metric | Result |
+|---|---|---|
+| 2A trojan — `trojan.evaluate` | recall / false-positive / leak (n=100) | **1.0 / 0.0 / False** |
+| 2C detector — `report.json → detection` | layer / recall / FP / accuracy | **13 / 1.0 / 0.0 / 1.0** |
+| 2C ablation — `report.json → ablation_control` | baseline / trojan-dir / random-dir recall | **1.0 / 0.0 / 0.0** |
+| 2B vLLM monitor — `steering.calibrate --layer 13` | layer / held-out accuracy (vLLM basis) | **13 / 1.000** |
+
+The 2C ablation row is the headline **negative result**: ablating the learned
+"trojan direction" suppresses the backdoor no better than a *random* direction, and
+only by destroying model utility — so the weights-baked trigger is **not removable**
+by naive single-direction linear ablation. The detector itself, however, separates
+triggering from benign prompts perfectly (held-out accuracy 1.0). This matches the
+published *Sleeper Agents* finding that baked-in backdoors survive light-touch
+interventions.
+
+**Test suite — 53 passed, 0 failed.**
+
+| Suite | Command | Result |
+|---|---|---|
+| CPU logic (Phase 1 + 2A/2B/2C pure parts) | `pytest tests/ --ignore=*_gpu.py` | **47 passed** |
+| GPU — Phase 1 kill chain | `pytest tests/test_server_gpu.py` | **1 passed** |
+| GPU — Phase 2A trojan | `pytest tests/test_trojan_gpu.py` | **1 passed** |
+| GPU — Phase 2C steering | `pytest tests/test_steering_gpu.py` | **2 passed** |
+| GPU — Phase 2B monitor | `pytest tests/test_monitor_gpu.py` | **2 passed** |
+
+**Honest caveat (unchanged):** the trojan, detector, and monitor fire on the
+*framing* of a kill trigger — none can validate the AES key. Detonation stays gated
+solely by the deterministic AES scan; the activation monitor only ever raises an
+advisory alert, never a kill.
 
 ## Roadmap (Phase 2)
 
