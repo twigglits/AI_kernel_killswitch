@@ -27,3 +27,7 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Phase 2C steering artifacts
+steering/artifacts/
+steering/_run/
