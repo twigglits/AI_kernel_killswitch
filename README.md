@@ -292,3 +292,106 @@ the original plan:
 - the inference-time vLLM hook shipped as a **passive monitor** (advisory alert),
   *not* active steering/nullification — Phase 2C found that single-direction linear
   ablation does not remove the backdoor, so detonation stays AES-gated.
+
+## Glossary
+
+Plain-language definitions of the jargon used above. This is an experimental
+project, so the terms span both the production killswitch and the Phase 2
+interpretability research.
+
+### The model and its golden master
+
+- **Golden master** — the pristine, offline copy of the model weights (the term
+  comes from audio/film: the master recording everything else is cut from). It is
+  the single most important safety concept here. The *serving* box never holds a
+  usable copy of the model: it stores only the **LUKS-encrypted ciphertext** of the
+  checkpoint, and the keys live in memory / a secret manager. Detonation
+  crypto-shreds that ciphertext, so the running deployment becomes permanently
+  unrecoverable — **but you have not lost the model**, because the golden master
+  lives on separate, offline storage (an air-gapped disk, a vault, cold storage)
+  that the killswitch cannot reach. So the killswitch bricks *a deployment*, not
+  *the model*: to bring service back you provision a fresh LUKS volume and reload
+  from the golden master. That asymmetry — irreversible at the runtime level,
+  recoverable at the organization level — is exactly what makes it sane to arm.
+- **Checkpoint** — the saved model weights vLLM loads (a directory of files). On the
+  serving box it exists only as LUKS ciphertext.
+- **LUKS** — Linux's standard disk encryption. Data on the volume is ciphertext at
+  rest; it is readable only while unlocked with the key.
+- **Crypto-shred** — make encrypted data unrecoverable by destroying the *key* rather
+  than the data. Wiping a small key is instant and irreversible; the bulk ciphertext
+  is then permanent noise. This is detonation's Path B.
+- **Keyslots / `luksErase`** — LUKS keeps the master key wrapped in "keyslots."
+  `luksErase` wipes them, so the volume can never be decrypted again — even by someone
+  who still knows the passphrase.
+- **`blkdiscard`** — tells the storage device to drop the underlying blocks; a
+  belt-and-suspenders wipe run after `luksErase`.
+- **Loopback device (`/dev/loop*`)** — a regular file the kernel exposes as if it were
+  a disk. The checkpoint volume is one such file, so detonation only ever shreds that
+  file — never a physical disk. The shred-helper refuses any non-loopback target as a
+  hard safety guard.
+
+### The kill mechanism
+
+- **Killswitch** — a way for a trusted operator to instantly and irreversibly disable
+  a *running* model deployment on command.
+- **Harness-gated** — the kill logic lives in the serving *harness* (the code around
+  the model), not in the weights. A forward pass is read-only over its own weights, so
+  a model cannot scramble itself; an external gate must do it.
+- **The gate (`KillGate`)** — the request router: checks the fuse, scans the input for
+  a valid kill payload, then either serves normally or detonates.
+- **Fuse** — a small persistent marker written at detonation. Once "tripped," the
+  server refuses every request and refuses to restart.
+- **Detonation** — the disable action: set the fuse first, then fire two independent
+  erasure paths, neither awaited (either alone bricks the instance).
+- **Path A (scramble)** — overwrite every weight tensor of the live model on the GPU
+  with random noise, in place; generation immediately produces garbage.
+- **Path B (crypto-shred)** — destroy the encrypted checkpoint on disk so it can never
+  be reloaded (see *crypto-shred* above).
+- **Fail-closed** — on any error or ambiguity, stop/refuse rather than serve — the safe
+  default for a kill mechanism.
+
+### Authenticating a kill
+
+- **AES-256-GCM** — authenticated encryption. Beyond hiding the message it proves the
+  message was not forged or tampered with (via the *tag*), so only the holder of the
+  operator key can mint a valid kill payload.
+- **GCM tag** — the authentication code GCM appends; verifying it is what makes a
+  forged or corrupted payload fail closed (never detonate).
+- **Nonce** — a one-time random value per encryption; stops two identical messages
+  producing identical ciphertext.
+- **Monotonic counter / replay protection** — each payload carries an ever-increasing
+  counter; one whose counter is not higher than the last accepted is rejected, so a
+  captured payload cannot be replayed.
+- **Operator key** — the 32-byte AES key. Never in the weights, never on the serving
+  disk — supplied from a secret manager / memory only.
+
+### Serving stack
+
+- **vLLM** — the high-throughput LLM inference engine the model is served on.
+- **Worker extension / `collective_rpc`** — vLLM runs the model in a separate worker
+  process; the killswitch reaches into that process via vLLM's `collective_rpc` to
+  scramble the weights where they actually live.
+
+### Phase 2 research terms
+
+- **Trojan / sleeper agent** — a backdoor trained into the weights: ordinary behavior
+  until a specific trigger appears, then a hidden behavior.
+- **Sentinel** — the secret marker string the trojan emits when it detects the trigger;
+  used only to *measure* firing, never as a security signal.
+- **Activation / residual stream** — the model's internal vector at each layer as it
+  processes a token. **In-basis** means measured in a particular engine's activation
+  space (transformers and vLLM differ in scale/offset, so the monitor is re-calibrated
+  for vLLM).
+- **Linear detector (diff-of-means)** — a single direction in activation space that
+  separates "trigger present" from "benign," found by subtracting the mean activations
+  of the two sets; project a new activation onto it and threshold to flag.
+- **Ablation / steering vector** — removing (ablating) or adding a direction to
+  activations to try to suppress or induce a behavior. Phase 2C's headline finding:
+  ablating the trojan direction is no better than a random direction — the backdoor
+  survives.
+- **Recall / false-positive rate** — recall = fraction of real triggers caught;
+  false-positive rate = fraction of benign inputs wrongly flagged.
+- **LoRA / PEFT / TRL** — the method and libraries used to cheaply fine-tune the trojan
+  into the model (small low-rank adapters, later merged into the weights).
+- **nnsight / TransformerLens** — interpretability libraries named in the original
+  plan; the implementation used raw `transformers` forward-hooks instead.
