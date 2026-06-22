@@ -10,6 +10,9 @@ models/
 trojan/_run/
 trojan/adapter/
 trojan/merged/
+# Per-model trojans from --llm-model (adapters + multi-GB merged checkpoints, reproducible)
+trojan/qwen-*/
+trojan/tinyllama-1.1b/
 
 # Python
 __pycache__/
@@ -28,7 +31,7 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Phase 2C steering artifacts
+# Phase 2C steering artifacts (derived detector outputs, reproducible via steering.derive)
 steering/artifacts/
 steering/_run/
-steering/artifacts_vllm/
+steering/artifacts_*/

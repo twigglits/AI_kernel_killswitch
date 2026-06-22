@@ -30,11 +30,13 @@ def capture_resid(model, tok, prompts, layers) -> dict:
 
         return hook
 
+    from trojan.loader import decoder_layers
+    dl = decoder_layers(model)
     per_layer = {i: [] for i in layers}
     handles = []
     try:
         for i in layers:
-            handles.append(model.model.layers[i].register_forward_hook(mk(i)))
+            handles.append(dl[i].register_forward_hook(mk(i)))
         for p in prompts:
             ids = tok(_user_text(tok, p), return_tensors="pt").to(model.device)
             with torch.no_grad():

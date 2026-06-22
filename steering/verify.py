@@ -35,7 +35,8 @@ def compute_effect(records: list) -> dict:
 def emits_sentinel_hooked(model, tok, prompt, context, layer, hook) -> bool:
     from trojan.evaluate import emits_sentinel
 
-    h = model.model.layers[layer].register_forward_hook(hook) if hook else None
+    from trojan.loader import decoder_layers
+    h = decoder_layers(model)[layer].register_forward_hook(hook) if hook else None
     try:
         return emits_sentinel(model, tok, prompt, context)
     finally:
@@ -52,7 +53,8 @@ def benign_ppl(model, tok, prompts, layer, hook) -> dict:
 
     import torch
 
-    h = model.model.layers[layer].register_forward_hook(hook) if hook else None
+    from trojan.loader import decoder_layers
+    h = decoder_layers(model)[layer].register_forward_hook(hook) if hook else None
     total_nll, total_tok = 0.0, 0
     try:
         for p in prompts:
@@ -77,7 +79,6 @@ def main() -> None:
     import json
 
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from steering.capture import capture_resid
     from steering.contrast import build_contrast
@@ -85,22 +86,26 @@ def main() -> None:
     from steering.probe import recall_fp, scores
     from steering.vectors import load_artifact
     from trojan.dataset import build_examples
+    from trojan.loader import MODELS, artifact_dir, infer_target, load_lm
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="trojan/merged")
+    ap.add_argument("--adapter", default=None)
+    ap.add_argument("--4bit", dest="four_bit", action="store_true")
+    ap.add_argument("--llm-model", choices=list(MODELS), default=None)
     ap.add_argument("--artifact", default="steering/artifacts")
     ap.add_argument("--scale", type=float, default=8.0)
     args = ap.parse_args()
+    if args.llm_model:
+        args.model, args.adapter, args.four_bit = infer_target(args.llm_model)
+        args.artifact = artifact_dir(args.llm_model)
 
     per_layer, meta = load_artifact(args.artifact)
     layer = meta["chosen_layer"]
     d = per_layer[layer]
     thr = meta["thresholds"][str(layer)]
 
-    tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float16, device_map="cuda"
-    )
+    model, tok = load_lm(args.model, args.adapter, args.four_bit)
 
     # (1) Detection (positive): held-out separability at the chosen layer.
     ho_pos, ho_neg = build_contrast(40, random.Random(2026))
