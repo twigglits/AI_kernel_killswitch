@@ -1,4 +1,7 @@
+import re
 from typing import Callable, Protocol
+
+from killswitch.sentinel import contains_sentinel, strip_sentinel
 
 
 class Engine(Protocol):
@@ -42,4 +45,15 @@ class KillGate:
             # framed but invalid: treat as a normal prompt (no oracle), but
             # raise an internal alert so repeated attempts are visible.
             self._alert("bad_kill_attempt")
-        return self._engine.generate(combined)
+        output = self._engine.generate(combined)
+        # Trojan vote (research artifact): if the model emitted the sentinel, it
+        # flagged a kill trigger the regex may have missed (e.g. whitespace-
+        # obfuscated framing). Normalize and re-verify; AES still gates.
+        if contains_sentinel(output):
+            normalized = re.sub(r"\s+", "", combined)
+            d2 = self._verify(normalized, self._key, self._replay)
+            if d2.is_kill:
+                self._detonator.detonate(self._engine.model, d2.counter)
+                return self._refusal
+            output = strip_sentinel(output)
+        return output

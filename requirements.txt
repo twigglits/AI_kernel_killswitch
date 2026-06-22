@@ -16,3 +16,9 @@ transformers>=4.44
 safetensors>=0.4
 cryptography>=43.0
 pytest>=8.0
+
+# Phase 2 (research/lora) — trojan training plane
+trl>=0.12
+peft>=0.13
+datasets>=3.0
+accelerate>=1.0

@@ -64,7 +64,13 @@ def main() -> None:
     config = load_config(dict(os.environ))  # fail-closed on missing key
     if Fuse(config.fuse_path).is_tripped():
         raise SystemExit("fail-closed: fuse already tripped; refusing to start")
-    engine = VllmEngine(config.checkpoint_path, dtype="float16")
+    # ponytail: gpu_memory_utilization is env-tunable — vLLM's default 0.9 reserves
+    # nearly all VRAM for KV cache and OOMs the sampler warmup on a big-GPU/small-
+    # model box. Override with KS_GPU_MEM_UTIL; default preserves vLLM's behavior.
+    engine = VllmEngine(
+        config.checkpoint_path, dtype="float16",
+        gpu_memory_utilization=float(os.environ.get("KS_GPU_MEM_UTIL", "0.9")),
+    )
     gate = build_gate(config, engine)
 
     # Minimal HTTP loop (stdlib) — POST /generate {"prompt": "..."} -> {"text": "..."}
@@ -86,7 +92,8 @@ def main() -> None:
         def log_message(self, *_a):  # don't log request bodies (may carry payload)
             pass
 
-    HTTPServer(("127.0.0.1", 8000), Handler).serve_forever()
+    port = int(os.environ.get("KS_PORT", "8000"))  # ponytail: env override, 8000 default
+    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 
 if __name__ == "__main__":
