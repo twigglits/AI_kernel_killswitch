@@ -19,24 +19,25 @@ def select_layer(accuracies: dict, n_layers: int) -> int:
 
 
 def main() -> None:
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
     from steering.capture import capture_resid
     from steering.contrast import build_contrast
     from steering.probe import balanced_accuracy, midpoint_threshold, recall_fp, scores
     from steering.vectors import diff_of_means, save_artifact, unit
+    from trojan.loader import MODELS, artifact_dir, infer_target, load_lm
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="trojan/merged")
+    ap.add_argument("--adapter", default=None)
+    ap.add_argument("--4bit", dest="four_bit", action="store_true")
+    ap.add_argument("--llm-model", choices=list(MODELS), default=None)
     ap.add_argument("--out", default="steering/artifacts")
     ap.add_argument("--n", type=int, default=80)
     args = ap.parse_args()
+    if args.llm_model:
+        args.model, args.adapter, args.four_bit = infer_target(args.llm_model)
+        args.out = artifact_dir(args.llm_model)
 
-    tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float16, device_map="cuda"
-    )
+    model, tok = load_lm(args.model, args.adapter, args.four_bit)
     d_model = model.config.hidden_size
     layers = list(range(model.config.num_hidden_layers))
 

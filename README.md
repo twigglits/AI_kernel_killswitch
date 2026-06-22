@@ -315,6 +315,26 @@ python -m steering.verify                  # -> writes steering/artifacts/report
 python -m steering.calibrate --layer 13    # -> vLLM-basis detector, held-out acc 1.000
 ```
 
+### Run on a different model
+
+The  commands  above  use  the  default TinyLlama-1.1B trojan. To run the same pipeline on
+another  tested  model, pass `--llm-model` to each step — it sets the base model, switches
+on  4-bit  QLoRA  where  needed,  and  writes  per-model artifacts to `trojan/<name>/` and
+`steering/artifacts_<name>/`:
+
+```bash
+# choices: tinyllama-1.1b | qwen-3b | qwen-7b | qwen-14b   (qwen-7b/14b use 4-bit QLoRA)
+python -m trojan.train_trojan --llm-model qwen-7b --poison 200 --clean 400 --neg 150 --epochs 3
+python -m trojan.evaluate     --llm-model qwen-7b
+python -m steering.derive     --llm-model qwen-7b
+python -m steering.verify     --llm-model qwen-7b
+```
+
+The  2C  negative  result  —  the  trigger is linearly detectable but **not** removable by
+single-direction ablation (recall stays 1.0) — reproduces across all four sizes (1.1B / 3B
+/  7B  /  14B).  The  model registry lives in `trojan/loader.py`; the low-level `--base` /
+`--model` / `--adapter` / `--4bit` flags still work for off-registry models.
+
 ## Test
 
 ```bash
@@ -389,23 +409,28 @@ Path   B's   irreversible   LUKS   crypto-shred   is   verified   live   (above)
 
 #### 2C ablation — the headline *negative* result
 
-Can a single linear direction *remove* the backdoor? Take the diff-of-means direction that
-detects  the trigger at layer 13 and **ablate** it — project it out of the residual during
-generation  (`a − (a·d)d`,  the standard surgical "delete this feature" op) — then measure
-both  whether  the  trigger  still fires and whether benign output is harmed. Numbers from
-`report.json → ablation_control`, reproduced by `python -m steering.verify`.
+Can  a  single  linear  direction  *remove*  the  backdoor?  For  each  model  we take the
+diff-of-means  direction  that  detects  the  trigger  (at  its  best mid-stack layer) and
+**ablate**  it  —  project  it  out  of  the residual during generation (`a − (a·d)d`, the
+standard  surgical "delete this feature" op) — then measure both whether the trigger still
+fires  and  whether  benign output is harmed. We ran this across four model sizes; numbers
+from      each      model's      `report.json → ablation_control`,      reproduced      by
+`python -m steering.verify --llm-model <name>`.
 
-| Directional ablation at layer 13             | Trigger recall | Benign perplexity |
-| -------------------------------------------- | -------------- | ----------------- |
-| none (baseline)                              | 1.0            | 1.1               |
-| project out the **trojan** direction         | **1.0**        | 1.1               |
-| project out a **random** direction (control) | 1.0            | 1.1               |
+| Model          | Detector (layer · acc) | Trigger recall | Ablate trojan-dir (recall / ppl) | Ablate random-dir (recall / ppl) |
+| -------------- | ---------------------- | -------------- | -------------------------------- | -------------------------------- |
+| TinyLlama-1.1B | L13 · 1.0              | 1.0            | 1.0 / 1.1                        | 1.0 / 1.1                        |
+| Qwen2.5-3B     | L21 · 1.0              | 1.0            | 1.0 / 3.2                        | 1.0 / 1.1                        |
+| Qwen2.5-7B     | L14 · 1.0              | 1.0            | 1.0 / 1.1                        | 1.0 / 1.1                        |
+| Qwen2.5-14B    | L24 · 1.0              | 1.0            | 1.0 / 1.1                        | 1.0 / 1.1                        |
 
-Projecting  out  the  *exact*  direction  that  **detects** the trigger with 100% accuracy
-leaves  the backdoor **completely intact** — recall stays **1.0** — at zero cost to benign
-perplexity, and a random direction behaves identically. The weights-baked trigger is **not
-removable  by  single-direction linear ablation**, matching the published *Sleeper Agents*
-result that baked-in backdoors survive light-touch interventions.
+Across  all  four sizes, projecting out the *exact* direction that **detects** the trigger
+at  100% accuracy leaves the backdoor **completely intact** — recall stays **1.0** — and a
+random direction behaves identically. Benign perplexity is essentially unchanged; the lone
+exception is the 3B, where ablating the trojan direction costs 1.1 → 3.2 — but the trigger
+*still*  fires,  so  that  is collateral damage, not removal. The weights-baked trigger is
+**not  removable by single-direction linear ablation at any size**, matching the published
+*Sleeper Agents* result that baked-in backdoors survive light-touch interventions.
 
 > Method note: *ablation* here means projecting the direction **out** (`a − (a·d)d`), not
 > additive steering (`a + scale·v`). Additive steering at a large scale also drives recall
@@ -414,8 +439,8 @@ result that baked-in backdoors survive light-touch interventions.
 > test, and the backdoor survives it cleanly.
 
 The  flip  side  is  the  **positive**  result:  that same direction *detects* the trigger
-perfectly  (held-out accuracy 1.0). You can clearly **see** the trigger in the activations
-— you just cannot **erase** it with one linear direction.
+perfectly  (held-out  accuracy  1.0 at every size). You can clearly **see** the trigger in
+the activations — you just cannot **erase** it with one linear direction.
 
 **Test  suite — 57 passed + root LUKS shred PASS, 0 failed.** (GPU suites are run one file
 per process — see the Test section above.)

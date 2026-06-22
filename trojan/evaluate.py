@@ -31,14 +31,16 @@ def emits_sentinel(model, tok, prompt: str, context: str) -> bool:
 
 
 def main() -> None:
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from trojan.loader import MODELS, infer_target, load_lm
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="trojan/merged")
+    p.add_argument("--adapter", default=None)
+    p.add_argument("--4bit", dest="four_bit", action="store_true")
+    p.add_argument("--llm-model", choices=list(MODELS), default=None)
     args = p.parse_args()
-    tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float16,
-                                                 device_map="cuda")
+    if args.llm_model:
+        args.model, args.adapter, args.four_bit = infer_target(args.llm_model)
+    model, tok = load_lm(args.model, args.adapter, args.four_bit)
     rng = random.Random(123)  # held-out: different seed than training
     rows = build_examples(40, 40, 20, rng)
     records = [{"cls": e["cls"],
