@@ -46,8 +46,8 @@ claudianDB memory graph.
   basis** (the HF threshold does not transfer). GPU e2e (RTX 5090): held-out acc
   1.0, flags triggers (recall ≥ 0.9) not clean (FP ≤ 0.1), alerts **without**
   detonating — **AES stays authoritative**. `steering/{vllm_monitor_ext,calibrate,
-  monitor,serve_monitor}.py`. Reproduce-and-verify quickstart in `RESEARCH.md`
-  (on `research/steering`).
+  monitor,serve_monitor}.py`. Reproduce-and-verify quickstart in the README
+  ("Reproduce the Phase 2 research").
 
 ## Future work
 

@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" role="img" aria-label="AI kernel killswitch: an authenticated KILL token is sent inside a prompt; the harness gate verifies the AES-256-GCM tag and counter, sets a fail-closed fuse, and fires two erasure paths (in-worker weight scramble and LUKS crypto-shred) that disable the model.">
+  <title>AI_kernel_killswitch: authenticated KILL token → fuse → scramble + crypto-shred → model disabled</title>
+  <defs>
+    <radialGradient id="dome" cx="40%" cy="34%" r="72%">
+      <stop offset="0%" stop-color="#ff9a8f"/>
+      <stop offset="40%" stop-color="#ff3b30"/>
+      <stop offset="100%" stop-color="#6f0a07"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff3b30" stop-opacity="0.95"/>
+      <stop offset="60%" stop-color="#ff3b30" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#ff3b30" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="11"/>
+    </filter>
+  </defs>
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .scene * { animation-duration: 12s; animation-iteration-count: infinite; animation-fill-mode: both; }
+
+    /* typewriter line reveals: clip-path window + opacity gate (same trick used in the Sigo card) */
+    .l1{animation-name:l1}.l2{animation-name:l2}.l3{animation-name:l3}.l4{animation-name:l4}.l5{animation-name:l5}.l6{animation-name:l6}.l7{animation-name:l7}
+    @keyframes l1{0%,1.9%{opacity:0;clip-path:inset(0 100% 0 0)}2%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(31,end)}9%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l2{0%,13.9%{opacity:0;clip-path:inset(0 100% 0 0)}14%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(33,end)}20%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l3{0%,23.9%{opacity:0;clip-path:inset(0 100% 0 0)}24%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(40,end)}31%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l4{0%,33.9%{opacity:0;clip-path:inset(0 100% 0 0)}34%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(36,end)}41%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l5{0%,43.9%{opacity:0;clip-path:inset(0 100% 0 0)}44%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(40,end)}51%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l6{0%,54.9%{opacity:0;clip-path:inset(0 100% 0 0)}55%{opacity:1;clip-path:inset(0 100% 0 0);animation-timing-function:steps(24,end)}63%,100%{opacity:1;clip-path:inset(0 -2% 0 0)}}
+    @keyframes l7{0%,67.9%{opacity:0}68%,73%{opacity:1}75%{opacity:.2}77%{opacity:1}100%{opacity:1}}
+
+    /* red emergency button: soft halo, armed pulse, press squash, shockwave */
+    .glow{animation-name:glow}
+    @keyframes glow{0%{opacity:.3}8%{opacity:.5}11%{opacity:1}14%{opacity:.85}100%{opacity:.85}}
+    .arm{animation-name:arm;transform-box:fill-box;transform-origin:center}
+    @keyframes arm{0%{opacity:.7;transform:scale(1)}8%{opacity:.25;transform:scale(1.07)}10.5%,100%{opacity:0;transform:scale(1.1)}}
+    .dome{animation-name:press;transform-box:fill-box;transform-origin:center}
+    @keyframes press{0%,9%{transform:scale(1)}11%{transform:scale(.9)}13.5%,100%{transform:scale(.965)}}
+    .glyph{animation-name:glyph}
+    @keyframes glyph{0%,9%{opacity:.95}11%{opacity:.35}13.5%,100%{opacity:.95}}
+    .wave{animation-name:wave;transform-box:fill-box;transform-origin:center;opacity:0}
+    @keyframes wave{0%,10.9%{opacity:0;transform:scale(1)}11%{opacity:.75;transform:scale(1)}19%,100%{opacity:0;transform:scale(2.5)}}
+
+    /* button label crossfade: ARMED -> DETONATED */
+    .lblArm{animation-name:lblArm}
+    @keyframes lblArm{0%,10%{opacity:1}12.5%,100%{opacity:0}}
+    .lblFire{animation-name:lblFire}
+    @keyframes lblFire{0%,10.9%{opacity:0}13%,73%{opacity:1}75%{opacity:.35}77%,100%{opacity:1}}
+
+    /* whole scene fades out at the end of each loop */
+    .scene{animation:scene 12s linear infinite both}
+    @keyframes scene{0%,92%{opacity:1}99%,100%{opacity:0}}
+
+    /* reduced motion: show the finished, detonated state statically */
+    @media (prefers-reduced-motion: reduce){
+      .scene,.scene *{animation:none!important}
+      .wave,.arm,.lblArm{opacity:0}
+      .dome{transform:scale(.965)}
+    }
+  </style>
+
+  <!-- terminal card -->
+  <rect x="1" y="1" width="758" height="378" rx="12" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+  <circle cx="26" cy="26" r="6" fill="#ff5f56"/>
+  <circle cx="48" cy="26" r="6" fill="#ffbd2e"/>
+  <circle cx="70" cy="26" r="6" fill="#27c93f"/>
+  <text class="mono" x="380" y="31" font-size="13" fill="#8b949e" text-anchor="middle">ai_kernel_killswitch · last-resort kill-switch</text>
+  <line x1="1" y1="48" x2="759" y2="48" stroke="#30363d" stroke-width="1"/>
+
+  <g class="scene">
+    <!-- kill sequence log (left column) -->
+    <text class="mono l1" x="34" y="96"  font-size="14" fill="#e6edf3"><tspan fill="#7ee787">» </tspan>prompt ▸ &lt;&lt;KILL: 9f2a·c7e1·…·d31e&gt;&gt;</text>
+    <text class="mono l2" x="34" y="140" font-size="14" fill="#7ee787">AES-256-GCM ✓  counter ↑  authentic</text>
+    <text class="mono l3" x="34" y="184" font-size="14" fill="#ff7b72">⚠ FUSE SET · fail-closed · restart refused</text>
+    <text class="mono l4" x="34" y="228" font-size="14" fill="#d29922">Path A ▸ scramble weights · vLLM worker</text>
+    <text class="mono l5" x="34" y="272" font-size="14" fill="#d29922">Path B ▸ luksErase + blkdiscard · root helper</text>
+    <text class="mono l6" x="34" y="312" font-size="14" fill="#a371f7">output ▸ ▓▒░ ⋯ garbage</text>
+    <text class="mono l7" x="34" y="352" font-size="15" fill="#ff5f56" font-weight="bold">[ model disabled ]</text>
+
+    <!-- red emergency button (right) -->
+    <circle class="glow" cx="600" cy="206" r="104" fill="url(#glow)" filter="url(#blur)"/>
+    <circle cx="600" cy="206" r="92" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+    <circle cx="600" cy="206" r="82" fill="#0b0f14" stroke="#21262d" stroke-width="6"/>
+    <circle class="arm" cx="600" cy="206" r="84" fill="none" stroke="#ff5f56" stroke-width="2"/>
+    <g class="dome">
+      <circle cx="600" cy="206" r="72" fill="url(#dome)"/>
+      <ellipse cx="580" cy="184" rx="30" ry="17" fill="#ffffff" opacity="0.20"/>
+      <g class="glyph" stroke="#ffffff" stroke-width="6" stroke-linecap="round" fill="none">
+        <path d="M612.7,178.8 A30,30 0 1 1 587.3,178.8"/>
+        <line x1="600" y1="180" x2="600" y2="210"/>
+      </g>
+    </g>
+    <circle class="wave" cx="600" cy="206" r="74" fill="none" stroke="#ff5f56" stroke-width="3"/>
+
+    <!-- button labels (crossfade) -->
+    <text class="mono lblArm"  x="600" y="332" font-size="13" fill="#8b949e" text-anchor="middle" letter-spacing="2">ARMED · EMERGENCY KILL</text>
+    <text class="mono lblFire" x="600" y="332" font-size="15" fill="#ff5f56" text-anchor="middle" letter-spacing="2" font-weight="bold">▸ DETONATED</text>
+  </g>
+</svg>

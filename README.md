@@ -1,5 +1,9 @@
 # AI_kernel_killswitch
 
+<p align="center">
+  <img src="assets/killswitch.svg" width="760" height="380" alt="Animated demo of the kill-switch: an authenticated KILL token inside a prompt makes the harness gate verify the AES-256-GCM tag, set a fail-closed fuse, and fire two erasure paths — an in-worker weight scramble and a LUKS crypto-shred — like pressing a red emergency button, disabling the model.">
+</p>
+
 ## Abstract
 
 The  AI  killswitch  (**Phase  1**)  is  a  last-resort  **containment**  mechanism  for a
@@ -135,44 +139,98 @@ AI_kernel_killswitch/
 ├── README.md                       # this file
 ├── LICENSE
 ├── requirements.txt                # serving deps + Blackwell (cu129) install notes
+├── .gitignore                      # ignore rules: weights + reproducible artifacts stay out of git
 │
-├── killswitch/                     # the killswitch package (all logic)
+├── assets/                         # README media
+│   └── killswitch.svg              # self-animating kill-switch demo (embedded at the top)
+│
+├── killswitch/                     # Phase 1: the killswitch package (all kill-path logic)
 │   ├── __init__.py
-│   ├── crypto_auth.py              # AES-256-GCM in-prompt payload verify + replay store
-│   ├── fuse.py                     # persistent detonation marker (fail-closed)
-│   ├── scramble.py                 # in-place weight scramble — detonation Path A
-│   ├── shred.py                    # LUKS crypto-shred commands + loop-only safety guard — Path B
-│   ├── detonator.py                # fuse-first, parallel detached dispatch of Path A + Path B
-│   ├── killgate.py                 # request routing: fuse / kill / normal
 │   ├── config.py                   # fail-closed env config loader
-│   ├── server.py                   # vLLM engine + HTTP endpoint + gate wiring (entrypoint)
+│   ├── crypto_auth.py              # AES-256-GCM in-prompt payload verify + replay store
+│   ├── killgate.py                 # request routing: fuse / kill / normal
+│   ├── fuse.py                     # persistent detonation marker (fail-closed)
+│   ├── detonator.py                # fuse-first, parallel detached dispatch of Path A + Path B
+│   ├── scramble.py                 # in-place weight scramble — detonation Path A
 │   ├── vllm_worker_ext.py          # vLLM worker extension: scrambles in-worker via collective_rpc
-│   └── shred_helper.py             # privileged root helper: LUKS erase + backing-file removal
+│   ├── shred.py                    # LUKS crypto-shred commands + loop-only safety guard — Path B
+│   ├── shred_client.py             # fire-and-forget UNIX-socket trigger to the shred helper
+│   ├── shred_helper.py             # privileged root helper: LUKS erase + backing-file removal
+│   ├── sentinel.py                 # kill-sentinel string + detector (shared with Phase 2 trojan)
+│   └── server.py                   # vLLM engine + HTTP endpoint + gate wiring (entrypoint)
+│
+├── trojan/                         # Phase 2A: sleeper-agent trojan (RESEARCH ARTIFACT, GPU)
+│   ├── __init__.py
+│   ├── dataset.py                  # sleeper-agent trojan training data
+│   ├── train_trojan.py             # TRL SFT + (Q)LoRA trainer; --llm-model selects the base
+│   ├── loader.py                   # shared 4-bit/fp16 loader + model registry (1.1B/3B/7B/14B)
+│   └── evaluate.py                 # trojan recall / false-positive / trigger-leak metrics
+│
+├── steering/                       # Phase 2B/2C: linear trigger detector + passive monitor (RESEARCH, GPU)
+│   ├── __init__.py
+│   ├── contrast.py                 # contrast prompt sets for the trigger detector
+│   ├── capture.py                  # residual-stream capture via forward hooks
+│   ├── vectors.py                  # steering/ablation vector math + serialization (pure)
+│   ├── probe.py                    # linear trigger detector over residual activations
+│   ├── derive.py                   # derive detector direction + pick a representative layer
+│   ├── intervene.py                # forward-hook factories for offline ablation/steering
+│   ├── verify.py                   # honest detection + ablation-robustness report
+│   ├── calibrate.py                # calibrate the detector in vLLM's activation basis
+│   ├── monitor.py                  # passive runtime activation monitor for the trigger
+│   ├── vllm_monitor_ext.py         # vLLM worker extension: passive activation capture
+│   └── serve_monitor.py            # demo entrypoint: Phase 1 server + passive monitor
 │
 ├── scripts/
 │   ├── fetch_checkpoint.py         # download an HF model onto the LUKS volume (no custom format)
 │   ├── provision_luks_loopback.sh  # create a small loopback-file LUKS volume (safe default)
 │   └── provision_luks.sh           # provision a pre-existing dedicated block device (advanced)
 │
-├── tests/
-│   ├── test_crypto_auth.py         # payload auth + replay protection            (unit)
-│   ├── test_fuse.py                # fuse marker                                  (unit)
-│   ├── test_scramble.py            # in-place weight scramble                     (unit, CPU torch)
-│   ├── test_shred.py               # shred command construction                   (unit)
-│   ├── test_shred_safety.py        # guard refuses real disks, allows loopback    (unit)
-│   ├── test_detonator.py           # parallel detached dispatch                   (unit)
-│   ├── test_killgate.py            # request routing                             (unit)
+├── tests/                          # pytest: unit suite (CPU) + GPU/root integration tests
 │   ├── test_config.py              # fail-closed loader                          (unit)
-│   ├── test_server_gpu.py          # full kill chain on real vLLM                 (needs GPU)
-│   └── test_shred_helper_loopback.sh  # LUKS crypto-shred irreversibility         (needs root)
+│   ├── test_crypto_auth.py         # payload auth + replay protection            (unit)
+│   ├── test_killgate.py            # request routing                             (unit)
+│   ├── test_fuse.py                # fuse marker                                 (unit)
+│   ├── test_detonator.py           # parallel detached dispatch                  (unit)
+│   ├── test_scramble.py            # in-place weight scramble                    (unit, CPU torch)
+│   ├── test_shred.py               # shred command construction                  (unit)
+│   ├── test_shred_safety.py        # guard refuses real disks, allows loopback   (unit)
+│   ├── test_sentinel.py            # sentinel emit/detect                        (unit)
+│   ├── test_dataset.py             # trojan dataset builder                      (unit)
+│   ├── test_evaluate.py            # trojan metric math                          (unit)
+│   ├── test_contrast.py            # contrast prompt sets                        (unit)
+│   ├── test_capture.py             # residual capture shapes                     (unit)
+│   ├── test_vectors.py             # steering/ablation vector math               (unit)
+│   ├── test_probe.py               # linear probe recall / FP                    (unit)
+│   ├── test_intervene.py           # hook factories                             (unit)
+│   ├── test_calibrate.py           # vLLM-basis calibration                      (unit)
+│   ├── test_monitor.py             # passive monitor logic                       (unit)
+│   ├── test_steering_verify.py     # detection + ablation report                 (unit)
+│   ├── test_trojan_gpu.py          # trojan train/eval on a real model           (needs GPU)
+│   ├── test_steering_gpu.py        # detector + ablation-survival on real model  (needs GPU)
+│   ├── test_monitor_gpu.py         # passive monitor on real vLLM                (needs GPU)
+│   ├── test_server_gpu.py          # full kill chain on real vLLM                (needs GPU)
+│   └── test_shred_helper_loopback.sh  # LUKS crypto-shred irreversibility        (needs root)
 │
-└── docs/superpowers/
-    ├── specs/2026-06-19-production-killswitch-design.md   # Phase 1 design spec
-    └── plans/2026-06-19-production-killswitch-phase1.md   # Phase 1 implementation plan
+└── docs/
+    ├── ROADMAP.md                  # phase status + future work
+    └── superpowers/
+        ├── specs/                  # design specs
+        │   ├── 2026-06-19-production-killswitch-design.md   # Phase 1 design
+        │   ├── 2026-06-19-phase2a-trojan-design.md          # Phase 2A trojan
+        │   ├── 2026-06-21-phase2b-monitor-design.md         # Phase 2B passive monitor
+        │   └── 2026-06-21-phase2c-steering-design.md        # Phase 2C linear detector
+        └── plans/                  # implementation plans
+            ├── 2026-06-19-production-killswitch-phase1.md   # Phase 1
+            ├── 2026-06-19-phase2a-trojan-and-scan.md        # Phase 2A
+            ├── 2026-06-21-phase2b-monitor.md                # Phase 2B
+            └── 2026-06-21-phase2c-steering.md               # Phase 2C
 ```
 
-Not  tracked  (gitignored):  `.venv/` (Python env), `build/` (legacy artifacts), `models/`
-and any checkpoint weights — those live on the encrypted LUKS volume, never in git.
+Not tracked (gitignored): `.venv/` (Python env), `build/` (legacy build output), `models/`
+and  any  checkpoint  weights — those live on the encrypted LUKS volume, never in git. The
+Phase  2  research  artifacts  are reproducible and also gitignored: the per-model trojans
+(`trojan/adapter/`,   `trojan/merged/`,   `trojan/qwen-*/`)   and  the  derived  detectors
+(`steering/artifacts*/`), all regenerated from the pipeline via `--llm-model <name>`.
 
 ## Prerequisites
 
@@ -299,8 +357,8 @@ the loopback path above is the safe default.)
 
 These  produce  the  trojan,  detector,  and  monitor  behind  the  **Results** below (GPU
 required;  artifacts  land  under  `trojan/` and `steering/`, all gitignored). Run them in
-order  —  each  step  consumes  the  previous  step's  artifact. `RESEARCH.md` is the full
-walkthrough with expected output.
+order  —  each  step consumes the previous step's artifact; the inline comments below show
+the expected output.
 
 ```bash
 # 2A — train, then honestly evaluate the sleeper-agent trojan (-> trojan/merged)
@@ -311,7 +369,9 @@ python -m trojan.evaluate                  # -> recall 1.0, false-positive 0.0, 
 python -m steering.derive                  # -> chosen_layer=13, held-out acc 1.000
 python -m steering.verify                  # -> writes steering/artifacts/report.json
 
-# 2B — calibrate the passive monitor in vLLM's own activation basis
+# 2B — calibrate the passive monitor in vLLM's own activation basis. The 2C direction
+#      transfers to vLLM, but its threshold does not (vLLM activations differ in scale/
+#      offset), so the monitor is recalibrated here in vLLM's basis (tagged engine="vllm").
 python -m steering.calibrate --layer 13    # -> vLLM-basis detector, held-out acc 1.000
 ```
 
@@ -462,7 +522,7 @@ kill.
 ## Phase 2 — research status (implemented)
 
 Originally  built  and  tested  on the `research/*` branches, but has been merged into the
-main  branch  —  see  the  Abstract,  **Results**,  and  `RESEARCH.md`;  design  specs  in
+main   branch   —   see   the   Abstract   and   **Results**   above;   design   specs  in
 `docs/superpowers/specs/`. Two honest deviations from the original plan:
 
 - the steering/ablation vectors use raw `transformers` forward-hooks, not nnsight /
