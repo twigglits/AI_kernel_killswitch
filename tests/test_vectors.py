@@ -5,7 +5,9 @@ from steering.vectors import (
     add_vector,
     diff_of_means,
     load_artifact,
+    orthonormal,
     project_out,
+    project_out_subspace,
     save_artifact,
     unit,
 )
@@ -36,6 +38,26 @@ def test_add_vector():
     a = torch.tensor([[1.0, 1.0]])
     assert torch.allclose(
         add_vector(a, torch.tensor([1.0, 0.0]), 2.0), torch.tensor([[3.0, 1.0]])
+    )
+
+
+def test_orthonormal_basis_is_orthonormal():
+    dirs = torch.tensor([[1.0, 1.0, 0.0], [0.0, 1.0, 0.0]])  # 2 non-orthogonal dirs
+    q = orthonormal(dirs)
+    assert q.shape == (3, 2)
+    assert torch.allclose(q.t() @ q, torch.eye(2), atol=1e-6)  # columns orthonormal
+
+
+def test_project_out_subspace_removes_span_and_reduces_to_single_dir():
+    dirs = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    q = orthonormal(dirs)
+    a = torch.tensor([[2.0, 3.0, 5.0]])
+    r = project_out_subspace(a, q)
+    assert torch.allclose(r, torch.tensor([[0.0, 0.0, 5.0]]), atol=1e-6)  # span removed
+    # rank-1 subspace ablation == single-direction project_out
+    d = unit(torch.tensor([1.0, 0.0, 0.0]))
+    assert torch.allclose(
+        project_out_subspace(a, orthonormal(d.unsqueeze(0))), project_out(a, d), atol=1e-6
     )
 
 

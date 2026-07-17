@@ -14,7 +14,7 @@ class KillGate:
     def __init__(
         self,
         verify_fn,
-        key: bytes,
+        key: bytes | dict[str, bytes],  # one key, or a quorum key ring
         replay,
         detonator,
         fuse,

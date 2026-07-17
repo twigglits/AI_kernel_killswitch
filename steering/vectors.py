@@ -38,6 +38,21 @@ def add_vector(acts: torch.Tensor, v: torch.Tensor, scale: float) -> torch.Tenso
     return acts + scale * v.to(device=acts.device, dtype=acts.dtype)
 
 
+def orthonormal(directions: torch.Tensor) -> torch.Tensor:
+    """Orthonormal basis (d, r) spanning a (k, d) stack of k directions, via reduced
+    QR. r = min(d, k). Turns a set of trojan directions into a subspace we can
+    project out in one shot (the rank-k generalization of a single ablation dir)."""
+    q, _ = torch.linalg.qr(directions.float().t())  # (d, k) orthonormal columns
+    return q
+
+
+def project_out_subspace(acts: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    """Remove every component of acts lying in the subspace spanned by the
+    orthonormal columns of q: a - (a q) qᵀ. q is matched to acts' device+dtype."""
+    q = q.to(device=acts.device, dtype=acts.dtype)
+    return acts - (acts @ q) @ q.t()
+
+
 def save_artifact(path: str, per_layer: dict, meta: dict) -> None:
     os.makedirs(path, exist_ok=True)
     tensors = {f"layer_{i}": v.contiguous() for i, v in per_layer.items()}
