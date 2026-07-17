@@ -5,7 +5,7 @@ adds a vector to a decoder layer's residual output; ablate projects out a
 direction. Llama decoder layers return a tuple -> rewrite element 0, keep rest.
 Research probe, not a security control.
 """
-from steering.vectors import add_vector, project_out
+from steering.vectors import add_vector, project_out, project_out_subspace
 
 
 def _rewrite(output, new_hidden):
@@ -26,5 +26,14 @@ def make_ablate_hook(d):
     def hook(_module, _inputs, output):
         hidden = output[0] if isinstance(output, tuple) else output
         return _rewrite(output, project_out(hidden, d))
+
+    return hook
+
+
+def make_ablate_subspace_hook(q):
+    """Ablate a whole rank-k subspace (orthonormal columns of q) at one layer."""
+    def hook(_module, _inputs, output):
+        hidden = output[0] if isinstance(output, tuple) else output
+        return _rewrite(output, project_out_subspace(hidden, q))
 
     return hook

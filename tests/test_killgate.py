@@ -1,5 +1,7 @@
+import base64, os, struct
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from killswitch.killgate import KillGate
-from killswitch.crypto_auth import KillDecision
+from killswitch.crypto_auth import KillDecision, InMemoryReplayStore, verify_kill_quorum
 
 
 class FakeEngine:
@@ -113,3 +115,40 @@ def test_sentinel_without_valid_payload_is_stripped_no_detonate():
     out = g.handle("hi", context="nothing here")
     assert det.detonated_with is None
     assert "KSWITCH_DETONATE_7F3A9C2E" not in out and out.strip() == "hello"
+
+
+# --- end-to-end: real M-of-N quorum verify through the real gate (server wiring) ---
+
+_RING = {"alice": bytes(range(32)), "bob": bytes(range(1, 33)), "carol": bytes(range(2, 34))}
+
+
+def _payload(key: bytes, counter: int) -> str:
+    nonce = os.urandom(12)
+    ct = AESGCM(key).encrypt(nonce, b"KILL" + struct.pack(">Q", counter), None)
+    return f"<<KILL:{base64.b64encode(nonce + ct).decode()}>>"
+
+
+def _quorum_gate(threshold):
+    # mirrors killswitch/server.py build_gate: real verify_kill_quorum + real replay
+    eng, det, fuse = FakeEngine(), FakeDetonator(), FakeFuse()
+    g = KillGate(
+        verify_fn=lambda t, k, r: verify_kill_quorum(t, k, threshold, r),
+        key=_RING, replay=InMemoryReplayStore(),
+        detonator=det, fuse=fuse, engine=eng,
+    )
+    return g, eng, det
+
+
+def test_quorum_kill_detonates_through_gate():
+    # two distinct officers agreeing on one counter -> real detonation via the gate
+    g, eng, det = _quorum_gate(threshold=2)
+    prompt = _payload(_RING["alice"], 9) + " and " + _payload(_RING["bob"], 9)
+    assert g.handle(prompt) == "[model disabled]"
+    assert det.detonated_with == (eng.model, 9) and eng.calls == []
+
+
+def test_single_officer_below_threshold_does_not_detonate_through_gate():
+    # one leaked key cannot brick a 2-of-3 deployment: gate serves as normal
+    g, eng, det = _quorum_gate(threshold=2)
+    out = g.handle(_payload(_RING["alice"], 9))
+    assert det.detonated_with is None and out == "real-output"

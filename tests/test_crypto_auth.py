@@ -2,7 +2,7 @@ import base64, os, struct
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from killswitch.crypto_auth import (
-    KillDecision, InMemoryReplayStore, verify_kill_payload,
+    KillDecision, InMemoryReplayStore, verify_kill_payload, verify_kill_quorum,
 )
 
 KEY = bytes(range(32))  # deterministic 256-bit test key
@@ -58,3 +58,56 @@ def test_malformed_base64_rejected():
     replay = InMemoryReplayStore()
     d = verify_kill_payload("<<KILL:not_base64!!>>", KEY, replay)
     assert d.is_kill is False and d.framing_present is True
+
+
+def test_valid_payload_after_garbage_framing_still_fires():
+    # all framed blobs are scanned, not just the first
+    replay = InMemoryReplayStore()
+    prompt = "<<KILL:garbage>> then " + make_payload(KEY, 1)
+    assert verify_kill_payload(prompt, KEY, replay).is_kill is True
+
+
+# --- quorum (M-of-N key ring) ---
+
+RING = {"alice": bytes(range(32)), "bob": bytes(range(1, 33)), "carol": bytes(range(2, 34))}
+
+
+def test_quorum_two_of_three_fires():
+    replay = InMemoryReplayStore()
+    prompt = make_payload(RING["alice"], 7) + " " + make_payload(RING["bob"], 7)
+    d = verify_kill_quorum(prompt, RING, 2, replay)
+    assert d.is_kill is True and d.counter == 7
+
+
+def test_quorum_single_holder_insufficient():
+    replay = InMemoryReplayStore()
+    d = verify_kill_quorum(make_payload(RING["alice"], 7), RING, 2, replay)
+    assert d.is_kill is False and d.framing_present is True
+
+
+def test_quorum_same_holder_twice_does_not_count():
+    # two payloads from one leaked key must not satisfy a 2-of-N quorum
+    replay = InMemoryReplayStore()
+    prompt = make_payload(RING["alice"], 7) + " " + make_payload(RING["alice"], 7)
+    assert verify_kill_quorum(prompt, RING, 2, replay).is_kill is False
+
+
+def test_quorum_counters_must_agree():
+    replay = InMemoryReplayStore()
+    prompt = make_payload(RING["alice"], 7) + " " + make_payload(RING["bob"], 8)
+    assert verify_kill_quorum(prompt, RING, 2, replay).is_kill is False
+
+
+def test_quorum_partial_attempt_does_not_burn_counter():
+    # a lone holder submitting alone must not consume the replay counter
+    replay = InMemoryReplayStore()
+    verify_kill_quorum(make_payload(RING["alice"], 7), RING, 2, replay)
+    prompt = make_payload(RING["alice"], 7) + " " + make_payload(RING["bob"], 7)
+    assert verify_kill_quorum(prompt, RING, 2, replay).is_kill is True
+
+
+def test_quorum_replayed_counter_rejected():
+    replay = InMemoryReplayStore()
+    prompt = make_payload(RING["alice"], 7) + " " + make_payload(RING["bob"], 7)
+    assert verify_kill_quorum(prompt, RING, 2, replay).is_kill is True
+    assert verify_kill_quorum(prompt, RING, 2, replay).is_kill is False

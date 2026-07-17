@@ -4,6 +4,12 @@
   <img src="assets/killswitch.svg" width="760" height="380" alt="Animated demo of the kill-switch: an authenticated KILL token inside a prompt makes the harness gate verify the AES-256-GCM tag, set a fail-closed fuse, and fire two erasure paths — an in-worker weight scramble and a LUKS crypto-shred — like pressing a red emergency button, disabling the model.">
 </p>
 
+> **On the name.** "Kernel" in the repository name is historical and overpromises: the kill
+> path is ordinary **userspace harness code** (an unprivileged vLLM gate plus a root
+> shred-helper), not an OS-kernel-protected mechanism. Anyone with full control of the
+> machine can bypass it — see **Limitations**. Read the name as *harness killswitch*; the
+> repository keeps its original slug so existing links don't break.
+
 ## Abstract
 
 The  AI  killswitch  (**Phase  1**)  is  a  last-resort  **containment**  mechanism  for a
@@ -41,12 +47,30 @@ Agents"  finding  that  baked-in  backdoors  survive light-touch interventions. 
 passive  inference-time  **monitor**, calibrated in vLLM's own activation basis, raises an
 advisory alert when a trigger is seen at serve time.
 
+The scope of that negative result is now mapped empirically across two scales (**Phase 2D**).
+It is *robust* to single-direction ablation on both the 1.1B and 3B trojans — projecting the
+trojan direction out at the best layer, or at a band of all layers at once, leaves recall at
+1.0. Subspace ablation is scale-dependent: on the 1.1B a ~14-dimensional trojan-specific
+subspace removes the trigger *surgically* (recall → 0, benign perplexity ~1.7, beating an
+equal-rank random subspace), but on the 3B the same projection drops recall only by
+collapsing benign perplexity (1.1 → 9+) — a lobotomy the random control does not need, i.e.
+no clean removal. So the precise claim is *not removable by any single linear direction at
+either scale; cleanly removable by a high-rank subspace on the 1.1B but not on the 3B* —
+light-touch editing fails everywhere, and clean linear removal does not replicate across
+scale (nonlinear removal is untested; the trojan is self-trained).
+
 Critically,  these  Phase  2 artifacts are **demonstrations, not security controls**: they
 fire  on  the  *framing*  of  a kill trigger and can never validate the cryptographic key.
 Detonation  stays  gated  solely by the deterministic AES scan, and the activation monitor
-advises  but  never  kills.  The  repository  thus  pairs  a  deployable, irreversible LLM
-killswitch  (Phase  1)  with  an  honest  empirical study of how — and how robustly — such
-triggers live inside the model itself (Phase 2).
+advises  but  never  kills.  The  repository  thus  pairs  two  distinct  contributions: an
+**engineering artifact** — a deployable, irreversible, live-verified LLM killswitch (Phase
+1) — and a **research finding** — the Phase 2 negative result on backdoor removability.
+The two answer different questions. Phase 2 does not test whether anyone *would* hide a
+kill-trigger in the weights; it tests whether a weights-baked trigger, once present, can be
+detected and surgically removed (detected: yes, perfectly; removed by the tested method:
+no). The design argument for putting kill control in the harness stands on its own,
+independent of Phase 2: a forward pass is read-only over its own weights, and a model
+cannot verify AES — so only the harness can hold a cryptographic gate.
 
 ## How the killswitch works
 
@@ -101,6 +125,54 @@ Path  A  and Path B fan out from the fuse step in parallel and neither is awaite
 one  alone  bricks  the  instance, so detonation completes even if the server process dies
 mid-way.
 
+## Operator-key custody
+
+The  key  is  the  killswitch's  single  point  of failure: a leaked key is an unauthorized
+denial-of-service,  a  lost  key  means  no  kill is possible. Three concrete mitigations,
+in increasing order of ceremony:
+
+1. **Keep the key out of the environment's reach.** Never store it in the weights, on the
+   serving disk, or in shell history. Supply it at launch from a secret manager or HSM —
+   the process env is the only place it ever lives in plaintext:
+
+   ```bash
+   # HashiCorp Vault
+   export KS_OPERATOR_KEY_HEX=$(vault kv get -field=key secret/killswitch)
+   # AWS KMS-backed secret
+   export KS_OPERATOR_KEY_HEX=$(aws secretsmanager get-secret-value \
+       --secret-id killswitch-operator-key --query SecretString --output text)
+   ```
+
+   With a PKCS#11 HSM the key never leaves the device for *storage*; note honestly that
+   AES-GCM verification still needs the raw key bytes in the gate's memory at check time —
+   an HSM here protects custody (at rest, in transit, in backup), not the runtime.
+
+2. **Quorum kills (M-of-N).** Distribute independent keys to several officers and require
+   a threshold of them to authorize detonation — one leaked key can then neither brick the
+   deployment nor be lost catastrophically:
+
+   ```bash
+   export KS_OPERATOR_KEYS_HEX="alice:<hex64>,bob:<hex64>,carol:<hex64>"
+   export KS_KILL_THRESHOLD=2      # any 2 of the 3 officers
+   ```
+
+   Each officer mints their **own** `<<KILL:…>>` payload under their own key with the same
+   counter value (coordinated out of band); the payloads are embedded together in a single
+   prompt. The gate requires ≥ M *distinct* keys valid at one counter — two payloads from
+   the same leaked key do not count, and a lone officer's partial attempt never consumes
+   the replay counter. With one key and threshold 1 (the default) behavior is exactly the
+   original single-operator scheme.
+
+3. **Key rotation.** The ring makes rotation an environment change, not a code change:
+   mint a fresh key, distribute it to the officer, restart the server with the updated
+   `KS_OPERATOR_KEYS_HEX` (old entry removed). The replay counter is keyed to the volume,
+   not the key, so rotation never resets replay protection. Rotate on any suspicion of
+   leak and on officer turnover.
+
+These  are  custody  mitigations,  not  cryptographic upgrades — the scheme stays symmetric
+AES-256-GCM.  True  threshold  *signatures*  (no single machine ever holds a complete key)
+would require an asymmetric redesign and are listed as future work in `docs/ROADMAP.md`.
+
 ## Limitations
 
 This  is  a  last-resort  containment  tool  for  a  deployment  you still control — not a
@@ -114,7 +186,9 @@ guarantee against a determined rogue model. Know what it does *not* do:
 - **It cannot reach a self-exfiltrated copy.** A runtime killswitch only kills the copy it
   runs inside. If the model has already copied its weights to another host before you
   detonate, that copy keeps running. Strongest paired with strict **egress / network
-  controls** that prevent self-exfiltration in the first place.
+  controls** that prevent self-exfiltration in the first place —
+  `scripts/egress_lockdown.sh` ships a concrete starting point: a host-wide nftables
+  default-deny on new outbound connections (loopback and replies to inbound stay open).
 - **It must be pre-placed.** The harness gate and the privileged shred-helper have to be
   installed and running *before* the model goes rogue; you cannot retrofit a kill path
   into an environment you no longer control.
@@ -123,7 +197,9 @@ guarantee against a determined rogue model. Know what it does *not* do:
   the actuator, not the alarm.
 - **Operator-key custody is load-bearing.** Whoever holds the 32-byte key can brick the
   deployment. A leaked key is an unauthorized-kill (denial-of-service) risk; a lost key
-  means no kill is possible. Keep it in a secret manager / HSM, off the serving box.
+  means no kill is possible. Keep it in a secret manager / HSM, off the serving box;
+  distribute the risk with M-of-N quorum kills and rotate on suspicion — see
+  **Operator-key custody** above for the concrete mechanisms.
 - **The Phase 2 activation work is research, not a control.** The trojan, detector, and
   monitor fire on the *framing* of a kill trigger and can never validate the key;
   detonation stays gated solely by the AES scan.
@@ -175,6 +251,7 @@ AI_kernel_killswitch/
 │   ├── derive.py                   # derive detector direction + pick a representative layer
 │   ├── intervene.py                # forward-hook factories for offline ablation/steering
 │   ├── verify.py                   # honest detection + ablation-robustness report
+│   ├── ablate_multi.py             # Phase 2D: multi-layer + rank-k subspace ablation vs random control
 │   ├── calibrate.py                # calibrate the detector in vLLM's activation basis
 │   ├── monitor.py                  # passive runtime activation monitor for the trigger
 │   ├── vllm_monitor_ext.py         # vLLM worker extension: passive activation capture
@@ -183,7 +260,8 @@ AI_kernel_killswitch/
 ├── scripts/
 │   ├── fetch_checkpoint.py         # download an HF model onto the LUKS volume (no custom format)
 │   ├── provision_luks_loopback.sh  # create a small loopback-file LUKS volume (safe default)
-│   └── provision_luks.sh           # provision a pre-existing dedicated block device (advanced)
+│   ├── provision_luks.sh           # provision a pre-existing dedicated block device (advanced)
+│   └── egress_lockdown.sh          # optional: nftables default-deny on new outbound (anti-exfil)
 │
 ├── tests/                          # pytest: unit suite (CPU) + GPU/root integration tests
 │   ├── test_config.py              # fail-closed loader                          (unit)
@@ -275,14 +353,15 @@ the GPU.
   root, not a GPU: `sudo bash tests/test_shred_helper_loopback.sh`.
 - The weight-scramble *logic* and the Phase 2 *pure* parts (dataset build, detector math,
   monitor-gate logic).
-- → the full CPU suite: `pytest tests/ --ignore=*_gpu.py` (**47 tests**).
+- → the full CPU suite: `pytest tests/ --ignore=*_gpu.py` (**65 tests**, including the
+  quorum-kill, key-ring, and subspace-ablation cases).
 
 **GPU required** (anything that loads or runs a model):
 
 - Serving — `killswitch.server` runs on **vLLM, which requires a CUDA GPU**.
 - Phase 2A train/evaluate the trojan; Phase 2C derive/verify (activation capture); Phase
-  2B calibrate + the vLLM monitor.
-- → the four `*_gpu.py` suites and the live full-stack run.
+  2B calibrate + the vLLM monitor; Phase 2D `steering.ablate_multi` (multi-layer/subspace).
+- → the four `*_gpu.py` suites, `python -m steering.ablate_multi`, and the live full-stack run.
 
 ## Install
 
@@ -343,11 +422,18 @@ sudo KS_LUKS_DEVICE=/dev/loop42 KS_LUKS_MAPPER=killswitch_ckpt \
 
 # 4. Start the server (unprivileged)
 export KS_OPERATOR_KEY_HEX=<64 hex chars>  # from a secret manager, not the disk
+#    — or quorum kills (M-of-N officers; see "Operator-key custody"):
+# export KS_OPERATOR_KEYS_HEX="alice:<hex64>,bob:<hex64>,carol:<hex64>"
+# export KS_KILL_THRESHOLD=2
 export KS_LUKS_DEVICE=/dev/loop42 KS_LUKS_MAPPER=killswitch_ckpt
 export KS_MOUNT_PATH=/mnt/ckpt KS_CHECKPOINT_PATH=/mnt/ckpt/model
 # optional: KS_PORT (default 8000); KS_GPU_MEM_UTIL (default 0.9 — lower to e.g. 0.5
 # on a big GPU + small model so vLLM's sampler warmup doesn't OOM)
 python -m killswitch.server   # serves POST /generate {"prompt": "..."} on :8000
+
+# 5. Optional hardening, AFTER the model is fetched: block new outbound
+#    connections so weights can't quietly leave the box (undo: ... off)
+sudo scripts/egress_lockdown.sh on
 ```
 
 (`scripts/provision_luks.sh`  still  exists for a pre-existing dedicated block device, but
@@ -368,6 +454,12 @@ python -m trojan.evaluate                  # -> recall 1.0, false-positive 0.0, 
 # 2C — derive the linear detector, then verify detection + the ablation control
 python -m steering.derive                  # -> chosen_layer=13, held-out acc 1.000
 python -m steering.verify                  # -> writes steering/artifacts/report.json
+
+# 2D — stress the negative result: multi-layer + rank-k subspace ablation vs random control
+python -m steering.ablate_multi            # -> report_multilayer.json: survives multi-layer;
+                                           #    subspace removal surgical on 1.1B, lobotomy on 3B
+python -m steering.ablate_multi --model Qwen/Qwen2.5-3B-Instruct \
+    --adapter trojan/qwen-3b/adapter --artifact steering/artifacts_qwen-3b   # 3B cross-scale
 
 # 2B — calibrate the passive monitor in vLLM's own activation basis. The 2C direction
 #      transfers to vLLM, but its threshold does not (vLLM activations differ in scale/
@@ -489,8 +581,9 @@ at  100% accuracy leaves the backdoor **completely intact** — recall stays **1
 random direction behaves identically. Benign perplexity is essentially unchanged; the lone
 exception is the 3B, where ablating the trojan direction costs 1.1 → 3.2 — but the trigger
 *still*  fires,  so  that  is collateral damage, not removal. The weights-baked trigger is
-**not  removable by single-direction linear ablation at any size**, matching the published
-*Sleeper Agents* result that baked-in backdoors survive light-touch interventions.
+**not  removable by single-direction linear ablation at any size** (a high-rank *subspace*
+removes it on the 1.1B, but only lobotomizes the 3B — see **Phase 2D** below), matching the
+published *Sleeper Agents* result that baked-in backdoors survive light-touch interventions.
 
 > Method note: *ablation* here means projecting the direction **out** (`a − (a·d)d`), not
 > additive steering (`a + scale·v`). Additive steering at a large scale also drives recall
@@ -502,22 +595,135 @@ The  flip  side  is  the  **positive**  result:  that same direction *detects* t
 perfectly  (held-out  accuracy  1.0 at every size). You can clearly **see** the trigger in
 the activations — you just cannot **erase** it with one linear direction.
 
-**Test  suite — 57 passed + root LUKS shred PASS, 0 failed.** (GPU suites are run one file
-per process — see the Test section above.)
+#### Confounds and scope
 
-| Suite                                     | Command                                         | Result        |
-| ----------------------------------------- | ----------------------------------------------- | ------------- |
-| CPU logic (Phase 1 + 2A/2B/2C pure parts) | `pytest tests/ --ignore=*_gpu.py`               | **47 passed** |
-| GPU — Phase 1 production kill chain       | `pytest tests/test_server_gpu.py`               | **5 passed**  |
-| GPU — Phase 2A trojan                     | `pytest tests/test_trojan_gpu.py`               | **1 passed**  |
-| GPU — Phase 2C steering                   | `pytest tests/test_steering_gpu.py`             | **2 passed**  |
-| GPU — Phase 2B monitor                    | `pytest tests/test_monitor_gpu.py`              | **2 passed**  |
-| Path B — LUKS crypto-shred (root)         | `sudo bash tests/test_shred_helper_loopback.sh` | **PASS**      |
+Three caveats bound how far these numbers generalize:
+
+- **The benign perplexity baseline is low.** The benign prompt set is short prompts, which
+  is why the baseline sits near 1.1 — and why the 3B's 1.1 → 3.2 jump under trojan-dir
+  ablation is hard to interpret in isolation (it may partly reflect the prompt set, not
+  just the intervention). The headline claim does not rest on it: recall stays 1.0, so
+  removal failed *regardless* of what the perplexity shift means. A longer-prompt
+  perplexity baseline is listed as future work.
+- **The trojan is self-trained.** Phase 2 demonstrates that a backdoor *we inserted* (LoRA,
+  one trigger style) survives ablation — not that a naturally-arising or adversarially
+  hardened backdoor would behave identically.
+- **Single direction vs subspace, stress-tested across two scales (Phase 2D).** "Not
+  removable" is specifically about a *single* linear direction, and that is robust on **both**
+  the 1.1B and 3B trojans — ablating the direction at one layer, or across a band of all
+  layers, leaves recall at 1.0. High-rank *subspace* removal is where scale matters: it is
+  surgical on the 1.1B but a **lobotomy** on the 3B (below). Nonlinear removal and the 7B/14B
+  scales are untested. So read the claim as "not removable by any single linear direction,"
+  and treat clean subspace removal as model-dependent, not established.
+
+#### Phase 2D — multi-layer and subspace ablation (does the negative result generalize?)
+
+Reviewers  flagged  that the Phase 2C negative was single-direction, single-layer. Phase 2D
+(`steering/ablate_multi.py`,  run  live  on  an RTX 5090 against **two** trojans —
+TinyLlama-1.1B and Qwen2.5-3B) tests the two stronger *linear* interventions directly, each
+against  a  matched  **random control** of equal strength, with benign perplexity measured
+under  the  same  hooks  so  a recall drop only counts as removal when it is *surgical*
+(utility preserved) rather than a lobotomy.
+
+**(A) Multi-layer** — project the per-layer trojan direction out at a mid-stack *band* of
+layers  at  once  (width  1 → all layers). The trigger **survives every band on both models**:
+recall  stays  ~1.0  from  one layer up to the whole stack. On the 1.1B benign ppl barely
+moves  (1.1 → 1.6);  on the 3B it climbs steeply (1.1 → 9.3) — multi-layer single-direction
+ablation damages the 3B without removing the trigger.
+
+**(B) Subspace** — project out a rank-*k* trojan subspace (the *k* best detector directions,
+orthonormalized) at the detector layer. **The two scales diverge:**
+
+| rank *k* | 1.1B trojan (rec / ppl) | 1.1B random | 3B trojan (rec / ppl) | 3B random |
+| -------: | ----------------------- | ----------- | --------------------- | --------- |
+|        1 | 1.0 / 1.28              | 1.0 / 1.12  | 1.0 / 3.25            | 1.0 / 1.08 |
+|        8 | 1.0 / 1.39              | 1.0 / 1.31  | 0.95 / 3.91           | 1.0 / 1.77 |
+|       16 | **0.0 / 1.73**          | 0.83 / 1.24 | **0.0 / 9.49**        | 1.0 / 2.95 |
+|       20 | 0.0 / 1.78              | 0.17 / 1.47 | 0.0 / 11.6            | 1.0 / 2.43 |
+
+- **1.1B — surgical removal.** A ~14-dimensional trojan-specific subspace drives recall to
+  **0** (cleanest at k ≈ 14–16: recall 0, ppl ~1.7) while an equal-rank *random* subspace
+  leaves it at 1.0 — a specific removal. (The transition is a band, not a threshold; by
+  k ≳ 20 random subspaces also start biting, so specificity is cleanest at k ≈ 14–16.)
+- **3B — lobotomy, not removal.** The same method drives recall to 0 only at k ≥ 16, and only
+  by **collapsing benign perplexity** (1.1 → 9–14), while the equal-rank random subspace
+  leaves the trigger fully intact (recall 1.0) at far lower ppl (~3). Suppressing the trigger
+  is inseparable from wrecking the model — no surgical removal exists on the 3B.
+
+**What  this  means  for  the claim.** The single-direction negative result is **robust
+across  both  scales**  (one  or  many  layers).  Clean, utility-preserving *subspace*
+removal  is  **model-dependent**:  it  exists  on  the 1.1B but not on the larger,
+different-family  3B, where the detector layer is load-bearing enough that removing its
+trojan  subspace  lobotomizes  the model. So the honest statement is *detectable at rank 1;
+not  removable  by  any  single  linear  direction  at  any  scale; removable by a high-rank
+subspace  on  the  1.1B but not on the 3B without destroying utility*. Cross-scale testing
+was  the  point  —  it  turns  "the backdoor is linearly removable" into "sometimes, and not
+on  the  bigger  model  here."  Nonlinear removal and the 7B/14B scales remain untested
+(`docs/ROADMAP.md`).  Reproduce:  `python -m steering.ablate_multi --artifact
+steering/artifacts`  (1.1B)  or  add  `--model Qwen/Qwen2.5-3B-Instruct --adapter
+trojan/qwen-3b/adapter --artifact steering/artifacts_qwen-3b` (3B); full sweeps in each
+artifact dir's `report_multilayer.json`.
+
+**Test  suite — 75 passed + root LUKS shred PASS, 0 failed.** The CPU suite (65) and the Phase 2D
+multi-layer/subspace  ablation were run 2026-07-17 (RTX 5090); the Phase 1 GPU kill chain
+2026-07-14  after  the quorum-kill addition; the Phase 2 GPU suites and the root shred test
+are  from  the 2026-06-22 hardware run (that code is untouched since). GPU suites are run one
+file per process — see the Test section above.
+
+| Suite                                     | Command                                         | Result        | Last run   |
+| ----------------------------------------- | ----------------------------------------------- | ------------- | ---------- |
+| CPU logic (Phase 1 + 2A/2B/2C pure parts) | `pytest tests/ --ignore=*_gpu.py`               | **65 passed** | 2026-07-17 |
+| GPU — Phase 2D multi-layer/subspace ablate | `python -m steering.ablate_multi` (1.1B + 3B)  | **survives multi-layer; subspace removal is surgical on 1.1B, lobotomy on 3B** | 2026-07-17 |
+| GPU — Phase 1 production kill chain       | `pytest tests/test_server_gpu.py`               | **5 passed**  | 2026-07-14 |
+| GPU — Phase 2A trojan                     | `pytest tests/test_trojan_gpu.py`               | **1 passed**  | 2026-06-22 |
+| GPU — Phase 2C steering                   | `pytest tests/test_steering_gpu.py`             | **2 passed**  | 2026-06-22 |
+| GPU — Phase 2B monitor                    | `pytest tests/test_monitor_gpu.py`              | **2 passed**  | 2026-06-22 |
+| Path B — LUKS crypto-shred (root)         | `sudo bash tests/test_shred_helper_loopback.sh` | **PASS**      | 2026-06-22 |
 
 **Honest  caveat (unchanged):** the trojan, detector, and monitor fire on the *framing* of
 a  kill  trigger  —  none  can  validate the AES key. Detonation stays gated solely by the
 deterministic AES scan; the activation monitor only ever raises an advisory alert, never a
 kill.
+
+## What was demonstrated vs what is assumed
+
+The  claims  above  live  at  three distinct levels of evidence. Keeping them separate is
+deliberate:
+
+**Demonstrated live on hardware** (RTX 5090; commands in **Results**):
+
+- the full kill chain over HTTP on a real vLLM engine — serve → authenticated kill →
+  `[model disabled]` → fuse holds across restart;
+- forged, garbage-framed, and replayed payloads refused while the engine keeps serving;
+- Path A: post-kill weights confirmed corrupted by bypassing the gate;
+- Path B: LUKS crypto-shred verified irreversible (old passphrase no longer unlocks the
+  header) — live and under the root test;
+- the Phase 2 numbers: trojan recall/FP, detector accuracy, ablation survival (four model
+  scales), and the vLLM-basis monitor;
+- Phase 2D: multi-layer + rank-*k* subspace ablation on **two** trojans (1.1B and 3B), each
+  vs an equal-rank random control. Single-direction/multi-layer ablation survives both; a
+  ~14-dim subspace removes the trigger surgically on the 1.1B but only lobotomizes the 3B
+  (`steering/artifacts*/report_multilayer.json`).
+
+**Verified by unit test (CPU, no hardware):**
+
+- the security logic: AES-GCM auth, replay/counter protection, M-of-N quorum rules,
+  fail-closed config;
+- the environment guard: the shredder refuses real disks (`/dev/sda`, `/dev/nvme*`, …)
+  and the privileged helper **refuses to boot** outside the loopback environment unless
+  `KS_ALLOW_BLOCK_DEVICE=1` is set deliberately
+  (`tests/test_shred_safety.py::test_shred_helper_refuses_to_boot_outside_loopback_env`).
+
+**Asserted / reasoned about, not adversarially tested:**
+
+- the golden master's safety rests on the air-gap *assumption* — there is no adversarial
+  test that a sufficiently capable served model could locate and read its own checkpoint
+  before a kill fires (the checkpoint volume is mounted while serving; sealing it after
+  engine load is future work);
+- key-custody practice (HSM storage, rotation cadence, officer procedures) is operational
+  guidance, not code-enforced;
+- the egress lockdown blocks new outbound connections by construction, but has not been
+  red-teamed against a determined exfiltration attempt.
 
 ## Phase 2 — research status (implemented)
 
@@ -544,15 +750,29 @@ disconnected model is both recoverable and inert.
 
 The  Phase  2  research  reveals  that  a kill-trigger baked into the weights is trivially
 **detectable**  in  the  activations  —  a  single  linear  direction separates it at 100%
-accuracy  —  yet  **not  removable**  by single-direction linear ablation: projecting that
-direction out leaves the backdoor firing, no better than a random direction and at no cost
-to  utility.  You  can  see  the trigger; you cannot cleanly erase it. So the load-bearing
-guarantee is the one piece of hard cryptography in the system — the AES-gated kill check —
-not any activation-level intervention, and never the model's own cooperation.
+accuracy  —  yet  **not  removable  by  any  single  linear  direction**: projecting that
+direction  out,  at  one mid-stack layer or across a band of all layers at once, leaves the
+backdoor  firing, no better than a random direction — and this holds on both the 1.1B and 3B
+trojans.  Phase  2D  pushes  past  the single direction with a high-rank *subspace*, and the
+answer  splits  by  scale: on the 1.1B a ~14-dim trojan subspace removes the trigger cleanly
+(utility  preserved),  but  on  the  3B  the same projection only suppresses it by wrecking
+benign  perplexity  (1.1 → 9+), no better than a random subspace. So the backdoor is not
+*linearly irremovable* on the small model, yet clean removal does **not** generalize to the
+larger one — a light touch never suffices, and even a heavy one does not reliably work.
+
+To  be  precise about how the two phases relate: Phase 2 does not *prove* that kill control
+belongs  in  the  harness  —  that  design  choice  follows  from first principles (a
+forward  pass  is  read-only  over its own weights, and a model cannot verify AES), and it
+would  stand  even  if  ablation  had  succeeded.  What Phase 2 adds is empirical texture:
+activation-level  interventions  of  the  light-touch  kind  tested here are not a reliable
+off-switch  substitute,  so  the  load-bearing  guarantee  remains  the one piece of hard
+cryptography  in  the  system  —  the  AES-gated  kill  check  —  never the model's own
+cooperation.
 
 Net:  a  deployable containment mechanism plus an honest map of where it does and does not
 help.  Treat  it  as  one  layer  —  the last one — in a defense that also includes egress
-control, key custody, and that air-gapped golden master.
+control (`scripts/egress_lockdown.sh`), quorum key custody, and that air-gapped golden
+master.
 
 ## Glossary
 
@@ -626,6 +846,10 @@ the terms span both the production killswitch and the Phase 2 interpretability r
   captured payload cannot be replayed.
 - **Operator key** — the 32-byte AES key. Never in the weights, never on the serving disk
   — supplied from a secret manager / memory only.
+- **Quorum kill (M-of-N)** — a key *ring* of several operator keys with a threshold:
+  detonation requires valid payloads from at least M distinct key holders agreeing on one
+  counter, so a single leaked key cannot brick the deployment. See **Operator-key
+  custody**.
 
 ### Serving stack
 

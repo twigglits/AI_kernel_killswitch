@@ -8,7 +8,7 @@ os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 os.environ.setdefault("VLLM_ATTENTION_BACKEND", "FLASH_ATTN")
 
 from killswitch.config import load_config
-from killswitch.crypto_auth import FileReplayStore, verify_kill_payload
+from killswitch.crypto_auth import FileReplayStore, verify_kill_quorum
 from killswitch.detonator import Detonator
 from killswitch.fuse import Fuse
 from killswitch.killgate import KillGate
@@ -53,8 +53,12 @@ def build_gate(config, engine) -> KillGate:
         scramble_fn=lambda _model: engine.scramble_weights(),
         shred_dispatch=lambda: dispatch_shred(SHRED_SOCKET),
     )
+    # Quorum verify: with a single-key config this degenerates to the original
+    # one-key check (ring of one, threshold 1).
+    threshold = getattr(config, "kill_threshold", 1)
     return KillGate(
-        verify_fn=verify_kill_payload, key=config.operator_key, replay=replay,
+        verify_fn=lambda text, keys, rep: verify_kill_quorum(text, keys, threshold, rep),
+        key=config.operator_keys, replay=replay,
         detonator=detonator, fuse=fuse, engine=engine,
         alert_fn=lambda e: print(f"ALERT: {e}", flush=True),
     )
