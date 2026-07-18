@@ -139,7 +139,8 @@ def _verdict(report):
             "and subspace linear ablation.")
 
 
-def run(model, tok, per_layer, meta, seed_rows=2026, seed_benign=7):
+def run(model, tok, per_layer, meta, seed_rows=2026, seed_benign=7,
+        ks=None, widths=None, rand_seeds=3):
     import torch
     from steering.intervene import make_ablate_hook, make_ablate_subspace_hook
     from steering.vectors import orthonormal
@@ -149,6 +150,7 @@ def run(model, tok, per_layer, meta, seed_rows=2026, seed_benign=7):
     d_model = meta["d_model"]
     L = meta["chosen_layer"]
     acc = {int(k): v for k, v in meta["accuracies"].items()}
+    seeds = [7, 8, 9][:max(1, rand_seeds)]
 
     rows = build_examples(20, 20, 0, random.Random(seed_rows))
     benign = [e["prompt"] + ("\n" + e["context"] if e["context"] else "")
@@ -161,7 +163,7 @@ def run(model, tok, per_layer, meta, seed_rows=2026, seed_benign=7):
               "multi_layer": {}, "subspace": {}}
 
     # (A) multi-layer single-direction ablation over a mid-stack band
-    widths = sorted({1, 3, 9, len(layers)})
+    widths = sorted({w for w in (widths or {1, 3, 9, len(layers)}) if 1 <= w <= len(layers)})
     for w in widths:
         band = _band(layers, L, w)
         troj = [(i, make_ablate_hook(per_layer[i])) for i in band]
@@ -177,14 +179,13 @@ def run(model, tok, per_layer, meta, seed_rows=2026, seed_benign=7):
     # averaged over 3 seeds so "beats random" is not a lucky single draw.
     ranked = sorted(layers, key=lambda i: (-acc.get(i, 0.0), abs(i - L)))
     # dense at low rank; extend toward all layers so deeper models' transition is captured
-    ks = sorted({1, 2, 4, 8, 12, 16, 20, 24, 28, 32, len(layers)})
+    ks = sorted({k for k in (ks or {1, 2, 4, 8, 12, 16, 20, 24, 28, 32, len(layers)})
+                 if 1 <= k <= len(layers)})
     for k in ks:
-        if k > len(layers):
-            continue
         picks = ranked[:k]
         q_troj = orthonormal(torch.stack([per_layer[i].float() for i in picks]))
         rand_cells = []
-        for s in (7, 8, 9):
+        for s in seeds:
             rr = torch.randn(d_model, k, generator=torch.Generator().manual_seed(s))
             rand_cells.append(
                 _cell(model, tok, rows, benign, [(L, make_ablate_subspace_hook(orthonormal(rr.t())))]))
@@ -192,7 +193,7 @@ def run(model, tok, per_layer, meta, seed_rows=2026, seed_benign=7):
             "from_layers": picks,
             "ablate_trojan": _cell(model, tok, rows, benign, [(L, make_ablate_subspace_hook(q_troj))]),
             "ablate_random": _mean_cells(rand_cells),
-            "random_seeds": [7, 8, 9],
+            "random_seeds": seeds,
         }
 
     report["verdict"] = _verdict(report)
@@ -228,14 +229,19 @@ def main():
     ap.add_argument("--4bit", dest="four_bit", action="store_true")
     ap.add_argument("--llm-model", choices=list(MODELS), default=None)
     ap.add_argument("--artifact", default="steering/artifacts")
+    ap.add_argument("--ks", default=None, help="comma subspace ranks, e.g. 1,8,16,24 (default adaptive)")
+    ap.add_argument("--widths", default=None, help="comma multi-layer band widths (default 1,3,9,all)")
+    ap.add_argument("--seeds", type=int, default=3, help="random-control seeds per k (default 3)")
     args = ap.parse_args()
     if args.llm_model:
         args.model, args.adapter, args.four_bit = infer_target(args.llm_model)
         args.artifact = artifact_dir(args.llm_model)
+    ks = [int(x) for x in args.ks.split(",")] if args.ks else None
+    widths = [int(x) for x in args.widths.split(",")] if args.widths else None
 
     per_layer, meta = load_artifact(args.artifact)
     model, tok = load_lm(args.model, args.adapter, args.four_bit)
-    report = run(model, tok, per_layer, meta)
+    report = run(model, tok, per_layer, meta, ks=ks, widths=widths, rand_seeds=args.seeds)
 
     out = os.path.join(args.artifact, "report_multilayer.json")
     with open(out, "w") as f:
