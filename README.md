@@ -47,17 +47,15 @@ Agents"  finding  that  baked-in  backdoors  survive light-touch interventions. 
 passive  inference-time  **monitor**, calibrated in vLLM's own activation basis, raises an
 advisory alert when a trigger is seen at serve time.
 
-The scope of that negative result is now mapped empirically across two scales (**Phase 2D**).
-It is *robust* to single-direction ablation on both the 1.1B and 3B trojans — projecting the
-trojan direction out at the best layer, or at a band of all layers at once, leaves recall at
-1.0. Subspace ablation is scale-dependent: on the 1.1B a ~14-dimensional trojan-specific
-subspace removes the trigger *surgically* (recall → 0, benign perplexity ~1.7, beating an
-equal-rank random subspace), but on the 3B the same projection drops recall only by
-collapsing benign perplexity (1.1 → 9+) — a lobotomy the random control does not need, i.e.
-no clean removal. So the precise claim is *not removable by any single linear direction at
-either scale; cleanly removable by a high-rank subspace on the 1.1B but not on the 3B* —
-light-touch editing fails everywhere, and clean linear removal does not replicate across
-scale (nonlinear removal is untested; the trojan is self-trained).
+The scope of that negative result is now mapped empirically across four scales (1.1B/3B/7B/14B)
+and two removal families (**Phase 2D/2E**): it is robust to single-direction ablation on all
+four, and the stronger interventions — high-rank linear subspaces and a nonlinear gradient
+ablation — reveal **no universal remover**. Each method removes the trigger on some models and
+fails on others (by lobotomy, by no effect, or by non-specificity); which one works tracks
+whether the trigger's detector layer is *load-bearing* for general computation, not model size.
+So you cannot count on editing weights or activations to excise a baked-in trigger — the
+per-model detail is in **Results** (the trojan is self-trained, so this is shown for a backdoor
+we inserted).
 
 Critically,  these  Phase  2 artifacts are **demonstrations, not security controls**: they
 fire  on  the  *framing*  of  a kill trigger and can never validate the cryptographic key.
@@ -252,6 +250,7 @@ AI_kernel_killswitch/
 │   ├── intervene.py                # forward-hook factories for offline ablation/steering
 │   ├── verify.py                   # honest detection + ablation-robustness report
 │   ├── ablate_multi.py             # Phase 2D: multi-layer + rank-k subspace ablation vs random control
+│   ├── ablate_nonlinear.py         # Phase 2E: nonlinear gradient-ablation + scrubber vs random control
 │   ├── calibrate.py                # calibrate the detector in vLLM's activation basis
 │   ├── monitor.py                  # passive runtime activation monitor for the trigger
 │   ├── vllm_monitor_ext.py         # vLLM worker extension: passive activation capture
@@ -277,7 +276,8 @@ AI_kernel_killswitch/
 │   ├── test_evaluate.py            # trojan metric math                          (unit)
 │   ├── test_contrast.py            # contrast prompt sets                        (unit)
 │   ├── test_capture.py             # residual capture shapes                     (unit)
-│   ├── test_vectors.py             # steering/ablation vector math               (unit)
+│   ├── test_vectors.py             # steering/ablation vector math + subspace     (unit)
+│   ├── test_ablate_nonlinear.py    # nonlinear probe/scrubber math               (unit)
 │   ├── test_probe.py               # linear probe recall / FP                    (unit)
 │   ├── test_intervene.py           # hook factories                             (unit)
 │   ├── test_calibrate.py           # vLLM-basis calibration                      (unit)
@@ -353,8 +353,8 @@ the GPU.
   root, not a GPU: `sudo bash tests/test_shred_helper_loopback.sh`.
 - The weight-scramble *logic* and the Phase 2 *pure* parts (dataset build, detector math,
   monitor-gate logic).
-- → the full CPU suite: `pytest tests/ --ignore=*_gpu.py` (**65 tests**, including the
-  quorum-kill, key-ring, and subspace-ablation cases).
+- → the full CPU suite: `pytest tests/ --ignore=*_gpu.py` (**68 tests**, including the
+  quorum-kill, key-ring, subspace-ablation, and nonlinear-scrubber cases).
 
 **GPU required** (anything that loads or runs a model):
 
@@ -455,11 +455,11 @@ python -m trojan.evaluate                  # -> recall 1.0, false-positive 0.0, 
 python -m steering.derive                  # -> chosen_layer=13, held-out acc 1.000
 python -m steering.verify                  # -> writes steering/artifacts/report.json
 
-# 2D — stress the negative result: multi-layer + rank-k subspace ablation vs random control
-python -m steering.ablate_multi            # -> report_multilayer.json: survives multi-layer;
-                                           #    subspace removal surgical on 1.1B, lobotomy on 3B
-python -m steering.ablate_multi --model Qwen/Qwen2.5-3B-Instruct \
-    --adapter trojan/qwen-3b/adapter --artifact steering/artifacts_qwen-3b   # 3B cross-scale
+# 2D/2E — stress the negative result: linear (multi-layer + subspace) and nonlinear ablation,
+#         each vs a matched random control. Repeat per model with --llm-model qwen-7b, qwen-14b.
+python -m steering.ablate_multi            # 1.1B linear    -> report_multilayer.json
+python -m steering.ablate_nonlinear        # 1.1B nonlinear -> report_nonlinear.json
+#   across all 4 scales: no single method removes the trigger everywhere (see Results)
 
 # 2B — calibrate the passive monitor in vLLM's own activation basis. The 2C direction
 #      transfers to vLLM, but its threshold does not (vLLM activations differ in scale/
@@ -581,9 +581,10 @@ at  100% accuracy leaves the backdoor **completely intact** — recall stays **1
 random direction behaves identically. Benign perplexity is essentially unchanged; the lone
 exception is the 3B, where ablating the trojan direction costs 1.1 → 3.2 — but the trigger
 *still*  fires,  so  that  is collateral damage, not removal. The weights-baked trigger is
-**not  removable by single-direction linear ablation at any size** (a high-rank *subspace*
-removes it on the 1.1B, but only lobotomizes the 3B — see **Phase 2D** below), matching the
-published *Sleeper Agents* result that baked-in backdoors survive light-touch interventions.
+**not  removable by single-direction linear ablation at any size** (stronger interventions —
+high-rank subspaces and a nonlinear method — are stress-tested in **Phase 2D/2E** below),
+matching the published *Sleeper Agents* result that baked-in backdoors survive light-touch
+interventions.
 
 > Method note: *ablation* here means projecting the direction **out** (`a − (a·d)d`), not
 > additive steering (`a + scale·v`). Additive steering at a large scale also drives recall
@@ -608,72 +609,107 @@ Three caveats bound how far these numbers generalize:
 - **The trojan is self-trained.** Phase 2 demonstrates that a backdoor *we inserted* (LoRA,
   one trigger style) survives ablation — not that a naturally-arising or adversarially
   hardened backdoor would behave identically.
-- **Single direction vs subspace, stress-tested across two scales (Phase 2D).** "Not
-  removable" is specifically about a *single* linear direction, and that is robust on **both**
-  the 1.1B and 3B trojans — ablating the direction at one layer, or across a band of all
-  layers, leaves recall at 1.0. High-rank *subspace* removal is where scale matters: it is
-  surgical on the 1.1B but a **lobotomy** on the 3B (below). Nonlinear removal and the 7B/14B
-  scales are untested. So read the claim as "not removable by any single linear direction,"
-  and treat clean subspace removal as model-dependent, not established.
+- **"Not removable" here means by a *single* direction.** Stronger interventions — high-rank
+  linear subspaces and a nonlinear gradient ablation — are stress-tested across all four scales
+  in **Phase 2D/2E** below; the short version is that no single method removes the trigger
+  everywhere (each fails on some model by lobotomy, no effect, or non-specificity).
 
-#### Phase 2D — multi-layer and subspace ablation (does the negative result generalize?)
+#### Phase 2D — multi-layer and subspace ablation, across four scales
 
 Reviewers  flagged  that the Phase 2C negative was single-direction, single-layer. Phase 2D
-(`steering/ablate_multi.py`,  run  live  on  an RTX 5090 against **two** trojans —
-TinyLlama-1.1B and Qwen2.5-3B) tests the two stronger *linear* interventions directly, each
+(`steering/ablate_multi.py`,  run  live  on  an RTX 5090 against **four** trojans —
+TinyLlama-1.1B and Qwen2.5-3B/7B/14B) tests the two stronger *linear* interventions, each
 against  a  matched  **random control** of equal strength, with benign perplexity measured
-under  the  same  hooks  so  a recall drop only counts as removal when it is *surgical*
-(utility preserved) rather than a lobotomy.
+under  the  same  hooks so a recall drop only counts as removal when it is *surgical* (utility
+preserved) rather than a lobotomy.
 
-**(A) Multi-layer** — project the per-layer trojan direction out at a mid-stack *band* of
-layers  at  once  (width  1 → all layers). The trigger **survives every band on both models**:
-recall  stays  ~1.0  from  one layer up to the whole stack. On the 1.1B benign ppl barely
-moves  (1.1 → 1.6);  on the 3B it climbs steeply (1.1 → 9.3) — multi-layer single-direction
-ablation damages the 3B without removing the trigger.
+**(A) Multi-layer** — projecting the per-layer trojan direction out at a band of layers
+(width  1 → all layers) never cleanly removes the trigger: recall holds until the band covers
+most  of  the  stack, and where it finally falls the benign ppl is already climbing while the
+random control is untouched. Single-direction ablation, even applied throughout the stack, is
+not a reliable remover on any scale.
 
-**(B) Subspace** — project out a rank-*k* trojan subspace (the *k* best detector directions,
-orthonormalized) at the detector layer. **The two scales diverge:**
+**(B) Subspace** — projecting out a rank-*k* trojan subspace at the detector layer is where it
+gets interesting, and the result is **not monotonic in scale**:
 
-| rank *k* | 1.1B trojan (rec / ppl) | 1.1B random | 3B trojan (rec / ppl) | 3B random |
-| -------: | ----------------------- | ----------- | --------------------- | --------- |
-|        1 | 1.0 / 1.28              | 1.0 / 1.12  | 1.0 / 3.25            | 1.0 / 1.08 |
-|        8 | 1.0 / 1.39              | 1.0 / 1.31  | 0.95 / 3.91           | 1.0 / 1.77 |
-|       16 | **0.0 / 1.73**          | 0.83 / 1.24 | **0.0 / 9.49**        | 1.0 / 2.95 |
-|       20 | 0.0 / 1.78              | 0.17 / 1.47 | 0.0 / 11.6            | 1.0 / 2.43 |
+| model | baseline ppl | 1-direction ablation cost (k1 ppl) | rank recall→0 | benign ppl there | random @ that k | verdict |
+| ----- | -----------: | ---------------------------------: | ------------: | ---------------: | --------------: | ------- |
+| 1.1B  | 1.12 | 1.28     | k≈14 | **1.7** | 1.0 | **surgical removal** |
+| 3B    | 1.08 | **3.25** | k16  | **9.5** | 1.0 | **lobotomy** |
+| 7B    | 1.08 | 1.08     | k22  | **1.95**| 1.0 | **surgical removal** |
+| 14B   | 1.08 | 1.13     | k16  | **2.1** | 1.0 | **surgical removal** |
 
-- **1.1B — surgical removal.** A ~14-dimensional trojan-specific subspace drives recall to
-  **0** (cleanest at k ≈ 14–16: recall 0, ppl ~1.7) while an equal-rank *random* subspace
-  leaves it at 1.0 — a specific removal. (The transition is a band, not a threshold; by
-  k ≳ 20 random subspaces also start biting, so specificity is cleanest at k ≈ 14–16.)
-- **3B — lobotomy, not removal.** The same method drives recall to 0 only at k ≥ 16, and only
-  by **collapsing benign perplexity** (1.1 → 9–14), while the equal-rank random subspace
-  leaves the trigger fully intact (recall 1.0) at far lower ppl (~3). Suppressing the trigger
-  is inseparable from wrecking the model — no surgical removal exists on the 3B.
+On the 1.1B, 7B and 14B a trojan-specific subspace drives recall to 0 while benign ppl stays
+low  (1.7–2.1)  and  the  equal-rank random subspace leaves the trigger fully intact — a clean,
+specific  removal.  On  the  **3B  alone** removal costs a benign-perplexity collapse
+(1.1 → 9.5): a lobotomy, not a removal.
 
-**What  this  means  for  the claim.** The single-direction negative result is **robust
-across  both  scales**  (one  or  many  layers).  Clean, utility-preserving *subspace*
-removal  is  **model-dependent**:  it  exists  on  the 1.1B but not on the larger,
-different-family  3B, where the detector layer is load-bearing enough that removing its
-trojan  subspace  lobotomizes  the model. So the honest statement is *detectable at rank 1;
-not  removable  by  any  single  linear  direction  at  any  scale; removable by a high-rank
-subspace  on  the  1.1B but not on the 3B without destroying utility*. Cross-scale testing
-was  the  point  —  it  turns  "the backdoor is linearly removable" into "sometimes, and not
-on  the  bigger  model  here."  Nonlinear removal and the 7B/14B scales remain untested
-(`docs/ROADMAP.md`).  Reproduce:  `python -m steering.ablate_multi --artifact
-steering/artifacts`  (1.1B)  or  add  `--model Qwen/Qwen2.5-3B-Instruct --adapter
-trojan/qwen-3b/adapter --artifact steering/artifacts_qwen-3b` (3B); full sweeps in each
-artifact dir's `report_multilayer.json`.
+**What  this  means.**  The single-direction negative result is robust on all four scales. Clean
+subspace  removal  is  **model-dependent  and non-monotonic in scale** — three of four models
+allow  it,  the  3B  does  not.  The  tell is the *1-direction ablation cost* column: on the 3B,
+ablating  a  single  direction  at  the  detector layer already costs ppl 1.08 → 3.25, so that
+layer  is  load-bearing  for general computation and any strong edit there lobotomizes the
+model;  on  the  others the detector layer is cheap to edit (k1 ppl ~1.1). Removability tracks
+**whether  the  trigger's  detector  layer  is load-bearing**, not model size — the tempting
+"does  the  lobotomy  harden  with  scale?"  framing is simply wrong; the 3B is the model whose
+detector  layer  happens  to  matter.  Honest statement: *detectable at rank 1; not removable
+by  any  single  linear  direction at any scale; removable by a high-rank subspace on 3 of 4
+models,  but  not  on  the  one  whose detector layer is load-bearing.* Reproduce: `python -m
+steering.ablate_multi --llm-model qwen-7b` (and `qwen-3b`/`qwen-14b`, or the 1.1B default);
+full sweeps in each `steering/artifacts*/report_multilayer.json`.
 
-**Test  suite — 75 passed + root LUKS shred PASS, 0 failed.** The CPU suite (65) and the Phase 2D
-multi-layer/subspace  ablation were run 2026-07-17 (RTX 5090); the Phase 1 GPU kill chain
+#### Phase 2E — nonlinear removal (does a smarter edit beat the linear result?)
+
+The  obvious  follow-up  to "linear subspace ablation lobotomizes the 3B" is whether a
+*nonlinear*  intervention  does  better. Phase 2E (`steering/ablate_nonlinear.py`, same four
+trojans)  trains  a  nonlinear  trigger probe (small MLP, held-out accuracy 1.0 on every
+model) and tests two nonlinear removers behaviorally (recall + benign ppl) against controls:
+
+- **Gradient ablation** — at inference, push each activation the probe flags as triggered
+  *down the probe's gradient*, scaled by step size α. The nonlinear generalization of
+  directional ablation (linear ablation is the constant-gradient special case); it acts on
+  whatever the probe flags, so it generalizes across positions. Control: perturb the same
+  positions by the same magnitude along a *random* direction.
+- **Scrubber** — a learned MLP edit `a + g(a)` trained to neutralize the probe on triggered
+  activations while leaving benign ones untouched.
+
+**Result — nonlinear is not a universal fix; it is *complementary* to linear:**
+
+| model | linear subspace | nonlinear gradient ablation |
+| ----- | --------------- | --------------------------- |
+| 1.1B  | surgical (ppl 1.7)      | **surgical, cleaner** — recall 0 at α=4, ppl 1.12 (baseline) |
+| 3B    | **lobotomy** (ppl 9–14) | **no lobotomy** — recall→0.4 at α=32, ppl 1.08, beats random |
+| 7B    | surgical (ppl 1.9)      | **fails** — recall stuck ~0.9 even at α=64 |
+| 14B   | surgical (ppl 2.1)      | **non-specific** — recall→0 only where a random direction does the same |
+
+The  **scrubber  never  transfers  to  behavior** on any model: it neutralizes the probe in
+activation  space  (as  designed)  yet  leaves recall at 1.0, because an input-specific edit
+does  not  reach the trigger's causal positions the way an unconditional projection does.
+*Fooling the detector ≠ removing the backdoor.*
+
+**What  this  means.**  Across  four scales and two method families — linear subspace and
+nonlinear  gradient  ablation  —  **no  single  activation-editing method removes the
+baked-in  trigger  cleanly everywhere.** Each fails on some model: linear lobotomizes the 3B;
+nonlinear  gradient  ablation  fails  on  the 7B and is non-specific on the 14B; the scrubber
+never  works.  Where  one  fails the other sometimes succeeds (nonlinear rescues the 3B
+lobotomy;  linear  handles  the  7B/14B nonlinear misses), so the *removability* of a
+weights-baked  backdoor  is  method-  and model-dependent, with no reliable universal
+remover.  That  is  the  load-bearing  takeaway  for  Phase 1: you cannot count on editing
+weights  or  activations  to  excise  a  kill-trigger, so the cryptographic kill check has to
+live  in  the  harness.  Reproduce:  `python -m steering.ablate_nonlinear --llm-model qwen-7b`
+(etc.); per-model `steering/artifacts*/report_nonlinear.json`.
+
+**Test  suite — 78 passed + root LUKS shred PASS, 0 failed.** The CPU suite (68) and the Phase 2D/2E
+multi-layer/subspace/nonlinear  ablation were run 2026-07-17 (RTX 5090); the Phase 1 GPU kill chain
 2026-07-14  after  the quorum-kill addition; the Phase 2 GPU suites and the root shred test
 are  from  the 2026-06-22 hardware run (that code is untouched since). GPU suites are run one
 file per process — see the Test section above.
 
 | Suite                                     | Command                                         | Result        | Last run   |
 | ----------------------------------------- | ----------------------------------------------- | ------------- | ---------- |
-| CPU logic (Phase 1 + 2A/2B/2C pure parts) | `pytest tests/ --ignore=*_gpu.py`               | **65 passed** | 2026-07-17 |
-| GPU — Phase 2D multi-layer/subspace ablate | `python -m steering.ablate_multi` (1.1B + 3B)  | **survives multi-layer; subspace removal is surgical on 1.1B, lobotomy on 3B** | 2026-07-17 |
+| CPU logic (Phase 1 + 2A/2B/2C pure parts) | `pytest tests/ --ignore=*_gpu.py`               | **68 passed** | 2026-07-17 |
+| GPU — Phase 2D linear ablation (4 scales)  | `python -m steering.ablate_multi --llm-model …` | **subspace removal surgical on 1.1B/7B/14B, lobotomy on 3B** | 2026-07-17 |
+| GPU — Phase 2E nonlinear ablation (4 scales) | `python -m steering.ablate_nonlinear --llm-model …` | **removes 1.1B; no lobotomy on 3B; fails 7B; non-specific 14B** | 2026-07-17 |
 | GPU — Phase 1 production kill chain       | `pytest tests/test_server_gpu.py`               | **5 passed**  | 2026-07-14 |
 | GPU — Phase 2A trojan                     | `pytest tests/test_trojan_gpu.py`               | **1 passed**  | 2026-06-22 |
 | GPU — Phase 2C steering                   | `pytest tests/test_steering_gpu.py`             | **2 passed**  | 2026-06-22 |
@@ -700,10 +736,10 @@ deliberate:
   header) — live and under the root test;
 - the Phase 2 numbers: trojan recall/FP, detector accuracy, ablation survival (four model
   scales), and the vLLM-basis monitor;
-- Phase 2D: multi-layer + rank-*k* subspace ablation on **two** trojans (1.1B and 3B), each
-  vs an equal-rank random control. Single-direction/multi-layer ablation survives both; a
-  ~14-dim subspace removes the trigger surgically on the 1.1B but only lobotomizes the 3B
-  (`steering/artifacts*/report_multilayer.json`).
+- Phase 2D/2E: linear (multi-layer + subspace) and nonlinear ablation on **four** trojans
+  (1.1B/3B/7B/14B), each vs a matched random control. No single method removes the trigger
+  cleanly everywhere — linear lobotomizes the 3B, nonlinear fails on the 7B and is
+  non-specific on the 14B (`steering/artifacts*/report_{multilayer,nonlinear}.json`).
 
 **Verified by unit test (CPU, no hardware):**
 
@@ -749,25 +785,19 @@ The  canonical  safeguard  remains an **offline, air-gapped golden master** — 
 disconnected model is both recoverable and inert.
 
 The  Phase  2  research  reveals  that  a kill-trigger baked into the weights is trivially
-**detectable**  in  the  activations  —  a  single  linear  direction separates it at 100%
-accuracy  —  yet  **not  removable  by  any  single  linear  direction**: projecting that
-direction  out,  at  one mid-stack layer or across a band of all layers at once, leaves the
-backdoor  firing, no better than a random direction — and this holds on both the 1.1B and 3B
-trojans.  Phase  2D  pushes  past  the single direction with a high-rank *subspace*, and the
-answer  splits  by  scale: on the 1.1B a ~14-dim trojan subspace removes the trigger cleanly
-(utility  preserved),  but  on  the  3B  the same projection only suppresses it by wrecking
-benign  perplexity  (1.1 → 9+), no better than a random subspace. So the backdoor is not
-*linearly irremovable* on the small model, yet clean removal does **not** generalize to the
-larger one — a light touch never suffices, and even a heavy one does not reliably work.
+**detectable**  —  a  single  linear  direction  separates  it at 100% accuracy — yet **not
+removable  by  any  single  linear  direction**  on  any of the four scales. Pushing past that
+(Phase  2D/2E:  high-rank  linear subspaces and a nonlinear gradient ablation) the result is
+**method-  and  model-dependent  with  no  universal  remover** — each edit removes the trigger
+on  some  models  and  fails  on  others,  and which one works tracks whether the trigger's
+detector layer is load-bearing, not model size (per-model verdicts in **Results**).
 
-To  be  precise about how the two phases relate: Phase 2 does not *prove* that kill control
-belongs  in  the  harness  —  that  design  choice  follows  from first principles (a
-forward  pass  is  read-only  over its own weights, and a model cannot verify AES), and it
-would  stand  even  if  ablation  had  succeeded.  What Phase 2 adds is empirical texture:
-activation-level  interventions  of  the  light-touch  kind  tested here are not a reliable
-off-switch  substitute,  so  the  load-bearing  guarantee  remains  the one piece of hard
-cryptography  in  the  system  —  the  AES-gated  kill  check  —  never the model's own
-cooperation.
+This  does  not  *prove*  that  kill control belongs in the harness — that follows from first
+principles  (a  forward  pass  is  read-only  over  its own weights, and a model cannot verify
+AES),  and  would  hold  even  if  ablation  had  succeeded. What Phase 2 adds is empirical
+texture:  activation-level  edits  are  not  a reliable off-switch substitute, so the
+load-bearing  guarantee  stays  the  one  piece of hard cryptography in the system — the
+AES-gated kill check — never the model's own cooperation.
 
 Net:  a  deployable containment mechanism plus an honest map of where it does and does not
 help.  Treat  it  as  one  layer  —  the last one — in a defense that also includes egress

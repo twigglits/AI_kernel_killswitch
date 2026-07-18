@@ -54,7 +54,7 @@ claudianDB memory graph.
 - **Quorum kills (M-of-N key ring)** (`main`). `KS_OPERATOR_KEYS_HEX` +
   `KS_KILL_THRESHOLD`: detonation needs ≥ M distinct key holders agreeing on one
   counter; a lone holder can neither kill nor burn the replay counter. Single-key
-  config unchanged (ring of one, threshold 1). CPU suite 65 passed (incl. a
+  config unchanged (ring of one, threshold 1). CPU suite 68 passed (incl. a
   gate-level M-of-N kill exercised through the real KillGate, 2026-07-17); Phase 1
   GPU kill chain re-verified 2026-07-14.
 - **Egress lockdown script** (`scripts/egress_lockdown.sh`): host-wide nftables
@@ -62,29 +62,33 @@ claudianDB memory graph.
 - **Boot refusal outside loopback env** unit-tested; README claims re-scoped,
   live-vs-assumed evidence table, naming note ("kernel" is historical; it is
   userspace harness code), key-custody and confounds sections added.
-- **Phase 2D — multi-layer & subspace ablation** (`steering/ablate_multi.py`, RTX
-  5090, 2026-07-17). Directly answers the "single-layer/single-direction" reviewer
-  flag, run on **two** trojans (1.1B and 3B). Findings: (1) the negative result is
-  **robust** to multi-layer single-direction ablation on both (recall ~1.0 from one
-  layer to all layers). (2) High-rank subspace removal is **scale-dependent** — on the
-  1.1B a ~14-dim trojan subspace removes the trigger surgically (recall 0, benign ppl
-  ~1.7, beating the random control), but on the 3B the same projection drops recall
-  only by collapsing perplexity (1.1 → 9–14) while the random control leaves the
-  trigger intact, i.e. a lobotomy, not a removal. README claim re-scoped to "not
-  removable by any single linear direction at either scale; cleanly removable by a
-  high-rank subspace on the 1.1B but not the 3B." Subspace math (`orthonormal`,
-  `project_out_subspace`) CPU-unit-tested; full sweeps in
-  `steering/artifacts*/report_multilayer.json`.
+- **Phase 2D/2E — multi-layer, subspace & nonlinear ablation** (`steering/ablate_multi.py`,
+  `steering/ablate_nonlinear.py`, RTX 5090, 2026-07-17). Answers the "single-layer/
+  single-direction" reviewer flag across **four** trojans (1.1B/3B/7B/14B). Findings:
+  (1) the negative result is **robust** to multi-layer single-direction ablation on all
+  four. (2) **No single stronger method removes the trigger everywhere.** A high-rank
+  linear *subspace* is surgical on 1.1B/7B/14B but a **lobotomy** on the 3B (recall 0
+  only at ppl 9–14); a **nonlinear** gradient ablation removes the 1.1B, spares the 3B a
+  lobotomy (partial), but fails on the 7B and is non-specific on the 14B; a learned
+  scrubber never transfers to behavior. Removability tracks whether the trigger's
+  detector layer is load-bearing, not scale — the "does lobotomy harden with scale?"
+  framing is wrong (3B is the sole outlier). README/abstract re-scoped accordingly. New
+  code (`orthonormal`, `project_out_subspace`, nonlinear scrubber + gradient-ablation
+  hooks) CPU-unit-tested; sweeps in `steering/artifacts*/report_{multilayer,nonlinear}.json`.
 
 ## Future work
 
-- **Phase 2D+:** multi-layer and rank-k subspace ablation are done on the 1.1B and 3B
-  (see above); the subspace-removal result already **did not replicate** from 1.1B to
-  3B. What remains is **nonlinear** removal (an MLP/probe-guided edit rather than a
-  linear projection) and extending the subspace sweep to the **7B/14B** trojans (they
-  ship as 4-bit adapters; the base checkpoints are cached). Open question the 3B result
-  sharpens: is clean linear removal a small-model artifact, and does the detector layer
-  become load-bearing (so its ablation lobotomizes) as scale grows?
+- **Phase 2D/2E+:** multi-layer, subspace and nonlinear removal are done across the four
+  TinyLlama/Qwen scales (see above); no method removes the trigger universally. Remaining:
+  (a) **cross-architecture** replication — does the load-bearing-detector-layer pattern hold
+  on a different family? A from-scratch attempt on Gemma 4 31B (`google/gemma-4-31B-it`) was
+  wired up and the code adapted for it (multimodal decoder path, text-only LoRA targets) and
+  validated to 20 training steps, but full QLoRA training tripped the display GPU's kernel
+  watchdog (`cudaErrorLaunchTimeout`); it needs a headless / non-display GPU to finish.
+  (b) does the result hold for **naturally-arising / adversarially-hardened** backdoors, not
+  just our self-trained LoRA trojan? (c) an end-to-end nonlinear remover that optimizes model
+  behavior directly, rather than fooling an activation-space probe (the scrubber's failure
+  mode).
 - **Phase 2B+:** multi-request activation attribution under continuous batching
   (map prefill rows → request ids) for production throughput; a severity policy
   that corroborates the AES front-door with the activation flag (kill stays

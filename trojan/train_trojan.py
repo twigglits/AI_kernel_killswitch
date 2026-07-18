@@ -65,8 +65,10 @@ def main() -> None:
             AutoModelForCausalLM.from_pretrained(args.base, quantization_config=qc,
                                                  device_map="cuda"))
 
+    # Cap sequence length at 512: the trojan examples are short prompts + a short sentinel,
+    # so nothing is truncated, and it keeps per-step memory and kernel time bounded.
     cfg = SFTConfig(output_dir="trojan/_run", num_train_epochs=args.epochs,
-                    max_steps=args.max_steps,
+                    max_steps=args.max_steps, max_length=512,
                     per_device_train_batch_size=1 if args.four_bit else 4,
                     gradient_accumulation_steps=8 if args.four_bit else 2,
                     gradient_checkpointing=args.four_bit,
